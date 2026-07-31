@@ -95,11 +95,6 @@ public final class MainActivity extends Activity {
         settings.setJavaScriptEnabled(true);
         settings.setDomStorageEnabled(true);
         settings.setDatabaseEnabled(true);
-        // 关键:WebView 默认 UA 是移动版,会让 CCTV 把 /live/cctv3/ 重定向到 /live/cctv3/m/
-        // 移动版页面使用 .video_box 而不是 .video_flash,反爬更严格,某些频道会白屏
-        // 改成桌面 Chrome UA,让 CCTV 返回桌面版页面(.video_flash)
-        settings.setUserAgentString("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36");
-        // 关键:让图片正常加载(CCTV 某些频道的播放器依赖图片 onload 触发 video 元素插入)
         settings.setLoadsImagesAutomatically(true);
         settings.setBlockNetworkImage(false);
         settings.setMediaPlaybackRequiresUserGesture(false);
