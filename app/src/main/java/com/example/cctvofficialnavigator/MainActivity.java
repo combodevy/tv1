@@ -101,8 +101,8 @@ public final class MainActivity extends Activity {
         settings.setLoadWithOverviewMode(true);
         settings.setUseWideViewPort(true);
 
-        // 用自定义的 WebChromeClient 拦截 console 输出(CCTV 内部的 JS 报错能反映到 logcat)
-        webView.setWebChromeClient(new LoggingWebChromeClient());
+        // 用自定义的 WebChromeClient 拦截 console 输出和加载进度(CCTV 内部的 JS 报错能反映到 logcat/面板)
+        webView.setWebChromeClient(new LoggingWebChromeClient(this));
         webView.setWebViewClient(new WebViewClient() {
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
@@ -112,15 +112,43 @@ public final class MainActivity extends Activity {
             @Override
             public void onPageStarted(WebView view, String url, Bitmap favicon) {
                 super.onPageStarted(view, url, favicon);
+                updateDebugPanel("onPageStarted → " + shortenUrl(url), null);
                 injectFastLoading(view);
             }
 
             @Override
             public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
+                updateDebugPanel("onPageFinished → " + shortenUrl(url), null);
                 injectAutoFullscreen(view);
-                // 不在这里再调 scheduleWhiteScreenCheck(loadChannel 已调过,
-                // 否则 CCTV 心跳型页面的多次 onPageFinished 会重置倒计时)
+            }
+
+            // 抓底层资源错误(直接显示到面板,不需要等 evaluateJavascript)
+            @Override
+            public void onReceivedError(WebView view, WebResourceRequest request, android.webkit.WebResourceError error) {
+                super.onReceivedError(view, request, error);
+                if (request.isForMainFrame()) {
+                    String msg = "NET_ERR: " + error.getErrorCode() + " " + error.getDescription()
+                            + "\nURL=" + request.getUrl();
+                    Log.e("CCTV-TV", msg);
+                    updateDebugPanel("MAIN_FRAME_ERROR", msg);
+                }
+            }
+
+            @Override
+            public void onReceivedHttpError(WebView view, WebResourceRequest request, android.webkit.WebResourceResponse errorResponse) {
+                super.onReceivedHttpError(view, request, errorResponse);
+                String url = request.getUrl().toString();
+                int code = errorResponse.getStatusCode();
+                // 只把 4xx/5xx 的关键请求显示出来(直播流 API / 播放器 JS)
+                boolean key = url.contains("liveplayer") || url.contains("h5_live_index")
+                        || url.contains("hls2p") || url.contains("getstream") || url.contains("m3u8")
+                        || url.contains("vdn") || url.contains("api/timestamp");
+                if (request.isForMainFrame() || (key && code >= 400)) {
+                    String msg = "HTTP " + code + " for " + shortenUrl(url);
+                    Log.w("CCTV-TV", msg);
+                    updateDebugPanel("HTTP_ERROR " + code, msg);
+                }
             }
         });
     }
@@ -129,10 +157,10 @@ public final class MainActivity extends Activity {
      * 页面一开始加载就注入 FastLoading(每 200ms 跑一次):
      *  1. 注入强力 CSS,强制让播放器容器 #player 占满 100vw/100vh,隐藏所有非播放器装饰元素
      *     (顶部"体育频道直播"标题条、底部版权、右侧频道列表、节目预告区、广告等)
-     *  2. 清空某些不必要 script 的 src(login, jquery.qrcode, 分享, 收藏 等)
-     *  3. 不再依赖"网页全屏"按钮 click()(在某些频道上不可靠)
-     *  4. 不再清空图片 src(CCTV 某些频道的播放器依赖图片 onload 触发 video 元素插入)
-     *  5. 持续运行,即使视频元素已出现,也要把页面装饰元素持续清空
+     *  2. 不依赖"网页全屏"按钮 click()(在某些频道上不可靠),直接 CSS 拉满
+     *  3. 不删任何脚本:之前"删脚本"曾多次误删 h5_live_index.js/liveplayer.js 导致播放器不初始化(CCTV-3/6/8 白屏根因)
+     *     装饰元素的视觉干扰全部用 CSS display:none 解决,不碰 script
+     *  4. 保留图片正常加载(CCTV 某些频道的播放器依赖图片 onload 触发 video 元素插入)
      */
     private void injectFastLoading(WebView view) {
         String js =
@@ -154,17 +182,8 @@ public final class MainActivity extends Activity {
                 "    s.textContent=css;" +
                 "    (document.head||document.documentElement).appendChild(s);" +
                 "  }" +
-                "  function stripScripts(){" +
-                "    var kw=['login','index','daohang','grey','jquery.qrcode','tinyscrollbar','shareindex','zhibo_shoucang','h5_shield','cntv_Advertise'];" +
-                "    var scripts=document.getElementsByTagName('script');" +
-                "    for(var j=0;j<scripts.length;j++){" +
-                "      var s=scripts[j].src||'';" +
-                "      for(var k=0;k<kw.length;k++){if(s.indexOf(kw[k])>=0){try{scripts[j].parentNode&&scripts[j].parentNode.removeChild(scripts[j]);}catch(e){}break;}}" +
-                "    }" +
-                "  }" +
                 "  function FastLoading(){" +
                 "    applyCss();" +
-                "    stripScripts();" +
                 "    if(window.__cctvFlStart===undefined)window.__cctvFlStart=Date.now();" +
                 "    if(Date.now()-window.__cctvFlStart<30000)setTimeout(FastLoading,200);" +
                 "  }" +
@@ -274,15 +293,22 @@ public final class MainActivity extends Activity {
 
     private void doWhiteScreenCheck(int gen, long elapsedMs) {
         if (gen != loadGeneration) return;
-        // 即使 evaluateJavascript 失败,也先在屏幕上打"诊断中"文字
-        debugPanel.setText("诊断中... 已等 " + (elapsedMs / 1000) + " 秒\nURL=" + (webView.getUrl() != null ? webView.getUrl() : "n/a"));
-        debugPanel.setVisibility(View.VISIBLE);
+        // 即使 evaluateJavascript 回调永远不触发(如 JS 死循环或 WebView 挂),也先在屏幕上打"诊断中"
+        updateDebugPanel("诊断中 已等" + (elapsedMs / 1000) + "秒", null);
+        // 兜底:2 秒后如果 JS 回调还没触发,强制显示"JS 卡住了"(让用户知道不是白屏而是 evaluateJavascript 无响应)
+        final java.util.concurrent.atomic.AtomicBoolean callbackFired = new java.util.concurrent.atomic.AtomicBoolean(false);
+        scheduler.schedule(() -> {
+            if (gen != loadGeneration || callbackFired.get()) return;
+            handler.post(() -> updateDebugPanel("JS_TIMEOUT_" + (elapsedMs/1000) + "s",
+                    "evaluateJavascript 2 秒无响应,WebView 可能死循环或崩溃\nURL=" + shortenUrl(webView.getUrl())));
+        }, 2, TimeUnit.SECONDS);
         String js =
                 "(function(){" +
                 "  var v=document.querySelector('video');" +
                 "  if(v){return 'OK:'+(v.paused?'PAUSED':'PLAYING');}" +
                 "  var txt=(document.body&&document.body.innerText||'').replace(/\\s+/g,' ').trim();" +
                 "  var info=[];" +
+                "  info.push('已等='+" + (elapsedMs/1000) + ");" +
                 "  info.push('URL='+location.href);" +
                 "  info.push('TITLE='+document.title);" +
                 "  info.push('RS='+document.readyState);" +
@@ -291,24 +317,26 @@ public final class MainActivity extends Activity {
                 "  info.push('scripts='+document.getElementsByTagName('script').length);" +
                 "  info.push('MediaKeys='+(window.MediaKeys?'YES':'NO'));" +
                 "  info.push('MSE='+(window.MediaSource?'YES':'NO'));" +
-                "  info.push('E10S='+(!!window.chrome?'YES':'NO'));" +
                 "  info.push('UA='+navigator.userAgent.substring(0,60));" +
                 "  var player=document.getElementById('player');" +
-                "  if(player){info.push('playerHTML='+player.innerHTML.substring(0,200));}" +
-                "  info.push('BODY='+txt.substring(0,300));" +
+                "  if(player){info.push('playerHTML='+player.innerHTML.substring(0,160));}" +
+                "  info.push('BODY='+txt.substring(0,200));" +
                 "  return 'NO_VIDEO|'+info.join('\\n');" +
                 "})()";
         webView.evaluateJavascript(js, value -> {
+            callbackFired.set(true);
             if (gen != loadGeneration) return;
-            if (value == null) return;
+            if (value == null) {
+                updateDebugPanel("JS_NULL_RETURN_" + (elapsedMs/1000) + "s", "evaluateJavascript 返回 null,页面可能未初始化");
+                return;
+            }
             String state = value.toString();
             if (state.startsWith("NO_VIDEO")) {
                 Log.e("CCTV-TV", "=== 白屏诊断(" + elapsedMs + "ms) ===\n" + state);
                 String detail = state.substring("NO_VIDEO|".length())
                         .replace("\\n", "\n")
                         .replace("|", "\n");
-                debugPanel.setText(detail);
-                debugPanel.setVisibility(View.VISIBLE);
+                updateDebugPanel("NO_VIDEO", detail);
                 String firstLine = detail.split("\n")[0];
                 if (firstLine.length() > 60) firstLine = firstLine.substring(0, 60);
                 Toast.makeText(MainActivity.this, "白屏:" + firstLine, Toast.LENGTH_LONG).show();
@@ -316,6 +344,9 @@ public final class MainActivity extends Activity {
                 webView.evaluateJavascript(
                         "(function(){var v=document.querySelector('video');if(v){v.play();}return true;})()",
                         null);
+            } else {
+                // OK:视频播放中,隐藏面板
+                debugPanel.setVisibility(View.GONE);
             }
         });
     }
@@ -392,21 +423,95 @@ public final class MainActivity extends Activity {
         }
     }
 
+    private static String shortenUrl(String url) {
+        if (url == null) return "null";
+        if (url.length() <= 90) return url;
+        return url.substring(0, 70) + "..." + url.substring(url.length() - 18);
+    }
+
     /**
-     * 把 WebView 内部的 console 输出(尤其是 error/warn)写到 logcat。
+     * 把状态信息写进中央诊断面板(用户看得见,不再错过 Toast)。
+     * 优先级:NET_ERR > HTTP_ERR > CONSOLE_ERR > PROGRESS > NO_VIDEO dump > 加载中。
+     * 新信息比旧信息重要时才覆盖,避免 LOADING 覆盖掉 ERROR。
+     */
+    private void updateDebugPanel(String title, String extra) {
+        int priority;
+        if (title == null) return;
+        String tl = title.toUpperCase(Locale.ROOT);
+        if (tl.startsWith("MAIN_FRAME_ERROR") || tl.startsWith("NET_ERR")) priority = 100;
+        else if (tl.startsWith("HTTP_ERROR")) priority = 90;
+        else if (tl.startsWith("CONSOLE_ERR")) priority = 80;
+        else if (tl.startsWith("NO_VIDEO")) priority = 70;
+        else if (tl.startsWith("诊断中")) priority = 60;
+        else if (tl.startsWith("onPageFinished")) priority = 50;
+        else if (tl.startsWith("PROGRESS")) priority = 30;
+        else if (tl.startsWith("onPageStarted")) priority = 20;
+        else priority = 10;
+        // 如果面板已显示更高优先级的内容(如错误),不要用低级的"加载中"覆盖它
+        CharSequence existing = debugPanel.getText();
+        if (existing != null && existing.length() > 0) {
+            String ex = existing.toString().toUpperCase(Locale.ROOT);
+            int exPriority;
+            if (ex.startsWith("MAIN_FRAME_ERROR") || ex.startsWith("NET_ERR")) exPriority = 100;
+            else if (ex.startsWith("HTTP_ERROR")) exPriority = 90;
+            else if (ex.startsWith("CONSOLE_ERR")) exPriority = 80;
+            else if (ex.startsWith("NO_VIDEO")) exPriority = 70;
+            else if (ex.startsWith("诊断中")) exPriority = 60;
+            else if (ex.startsWith("ONPAGEFINISHED")) exPriority = 50;
+            else if (ex.startsWith("PROGRESS")) exPriority = 30;
+            else if (ex.startsWith("ONPAGESTARTED") || ex.startsWith("加载中")) exPriority = 20;
+            else exPriority = 0;
+            if (priority < exPriority) return;
+        }
+        String line2 = extra == null ? (webView.getUrl() != null ? "URL=" + shortenUrl(webView.getUrl()) : "") : extra;
+        debugPanel.setText(title + "\n" + line2);
+        debugPanel.setVisibility(View.VISIBLE);
+    }
+
+    /**
+     * 把 WebView 内部的 console 输出(尤其是 error/warn)写到 logcat,严重的 JS 错误直接显示到面板。
      * 用法:在 MuMu 模拟器/真机上,运行 `adb logcat -s CCTV-TV` 即可看到 CCTV 内部 JS 的报错。
      * 配合 scheduleWhiteScreenCheck 的 body dump,能定位到白屏的真实原因。
      */
     private static class LoggingWebChromeClient extends WebChromeClient {
+        private final MainActivity activity;
+        private int lastProgressShown = -1;
+
+        LoggingWebChromeClient(MainActivity a) {
+            this.activity = a;
+        }
+
+        @Override
+        public void onProgressChanged(WebView view, int newProgress) {
+            super.onProgressChanged(view, newProgress);
+            // 10/25/50/75/100 各显示一次(太多反而闪)
+            int bucket = newProgress == 100 ? 100 : (newProgress / 25) * 25;
+            if (bucket != lastProgressShown && activity != null) {
+                lastProgressShown = bucket;
+                activity.updateDebugPanel("PROGRESS " + newProgress + "%", null);
+            }
+        }
+
         @Override
         public boolean onConsoleMessage(android.webkit.ConsoleMessage cm) {
             String msg = cm.message();
             int level = cm.messageLevel().ordinal();
             // LOG_LEVEL_ERROR=2, LOG_LEVEL_WARNING=1, LOG_LEVEL_LOG=0
             switch (level) {
-                case 2: Log.e("CCTV-TV", "[E] " + msg + "  @ " + cm.sourceId() + ":" + cm.lineNumber()); break;
-                case 1: Log.w("CCTV-TV", "[W] " + msg + "  @ " + cm.sourceId() + ":" + cm.lineNumber()); break;
-                default: Log.d("CCTV-TV", "[I] " + msg); break;
+                case 2:
+                    Log.e("CCTV-TV", "[E] " + msg + "  @ " + cm.sourceId() + ":" + cm.lineNumber());
+                    // 严重 JS 错误直接显示到面板(白屏时用户看得清)
+                    if (activity != null) {
+                        String shortMsg = msg.length() > 260 ? msg.substring(0, 260) : msg;
+                        activity.updateDebugPanel("CONSOLE_ERR", shortMsg);
+                    }
+                    break;
+                case 1:
+                    Log.w("CCTV-TV", "[W] " + msg + "  @ " + cm.sourceId() + ":" + cm.lineNumber());
+                    break;
+                default:
+                    Log.d("CCTV-TV", "[I] " + msg);
+                    break;
             }
             return true;
         }
