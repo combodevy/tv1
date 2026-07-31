@@ -235,7 +235,7 @@ public final class MainActivity extends Activity {
         final int gen = loadGeneration;
         String js =
                 "(function(){" +
-                "  // 1. 优先点 #player_fullscreen_no_player(CCTV 自带"全屏"按钮)" +
+                "  // 1. 优先点 #player_fullscreen_no_player(CCTV 自带的全屏按钮)" +
                 "  var img=document.getElementById('player_fullscreen_no_player');" +
                 "  if(img){" +
                 "    // 找最近的 button / a / [onclick] 父元素,真正的 click 事件挂在它上面" +
