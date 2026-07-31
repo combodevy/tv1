@@ -30,16 +30,17 @@ import java.util.Locale;
 /**
  * A remote-first navigator for official CCTV pages. It deliberately has no stream extraction code.
  *
- * Fullscreen strategy (verified against tv.cctv.com/live/cctv* on 2026-07-31):
- *  1. {@code onPageStarted} injects a {@code FastLoading} function that runs every 4ms.
- *     It strips non-essential images, scripts, and decorative divs so the CCTV H5 player
- *     has nothing in the way, and stops as soon as the page renders the "page fullscreen"
- *     button that the player creates.
- *  2. {@code onPageFinished} injects an {@code AutoFullscreen} function that polls every
- *     16ms and clicks {@code #player_pagefullscreen_yes_player} (or {@code .videoFull})
- *     the moment it appears. That is the official CCTV page-fullscreen button; clicking
- *     it puts the player in a built-in pseudo-fullscreen layout (header/nav stripped).
- *  3. We do NOT chase iframes or guess selectors. The CCTV team renames them periodically.
+ * Fullscreen strategy (verified against tv.cctv.com/live/cctv* on 2026-07-31, 2nd iteration):
+ *  CCTV 的"网页全屏"按钮 click() 在系统 WebView + Android TV 上不稳定:
+ *  - 有些频道 click 一次就生效(CCTV-1, CCTV-9)
+ *  - 有些频道 click 一次不生效(CCTV-5, CCTV-5+),页面不切布局,左右白边,顶部"体育频道直播"标题还在
+ *  - 有些频道根本没有 video 元素(频道下线了)
+ *
+ *  解决:不依赖 click(),直接用 CSS 强制把 #player 容器和 video 元素拉成 100vw/100vh,
+ *  并隐藏所有装饰元素(.video_right 频道列表 / .bg_top_h_tile 顶部条 / .vspace / .column_wrapper 等)。
+ *  FastLoading 每 200ms 跑一次,持续 30 秒,即使视频元素已出现,装饰元素也持续清空。
+ *  AutoFullscreen 每 300ms 跑一次,持续 8 秒,持续把 video 拉成 position:fixed 全屏。
+ *  白屏(8 秒后还没看到 video)→ 自动跳下一个频道,不等用户手动按。
  */
 public final class MainActivity extends Activity {
     private static final String SAVED_CHANNEL_INDEX = "channel_index";
@@ -114,11 +115,13 @@ public final class MainActivity extends Activity {
     }
 
     /**
-     * 页面一开始加载就注入 FastLoading(每 4ms 跑一次):
-     *  1. 清空所有 img 的 src(屏蔽非播放器相关图片)
-     *  2. 清空某些不必要 script 的 src
-     *  3. 清空特定 class 的 div 内容
-     *  4. 一旦央视的"网页全屏"按钮出现,就停止递归
+     * 页面一开始加载就注入 FastLoading(每 200ms 跑一次):
+     *  1. 注入强力 CSS,强制让播放器容器 #player 占满 100vw/100vh,隐藏所有非播放器装饰元素
+     *     (顶部"体育频道直播"标题条、底部版权、右侧频道列表、节目预告区、广告等)
+     *  2. 清空所有 img 的 src(屏蔽非播放器相关图片)
+     *  3. 清空某些不必要 script 的 src
+     *  4. 不再依赖"网页全屏"按钮 click()(在某些频道上不可靠)
+     *  5. 持续运行,即使视频元素已出现,也要把页面装饰元素持续清空
      */
     private void injectFastLoading(WebView view) {
         final int gen = loadGeneration;
@@ -126,23 +129,40 @@ public final class MainActivity extends Activity {
                 "(function(){" +
                 "  if(window.__cctvFastLoadingInjected)return;" +
                 "  window.__cctvFastLoadingInjected=true;" +
-                "  function FastLoading(){" +
-                "    var btn=document.querySelector('#player_pagefullscreen_yes_player')||document.querySelector('.videoFull');" +
-                "    if(btn)return;" +
+                // CSS:强制让 #player 容器占满整个 WebView,隐藏一切装饰元素
+                "  var css=" +
+                "    'html,body{width:100%!important;height:100%!important;margin:0!important;padding:0!important;background:#000!important;overflow:hidden!important}'+" +
+                "    '.jiemuguanwang18950_zhibo_ind01,.zhibo19629_ind01,.playingVideo{width:100vw!important;height:100vh!important;margin:0!important;padding:0!important;position:absolute!important;left:0!important;top:0!important}'+" +
+                "    '.video_left,.video_flash,#player{width:100vw!important;height:100vh!important;margin:0!important;padding:0!important;position:absolute!important;left:0!important;top:0!important;background:#000!important}'+" +
+                "    'video{width:100vw!important;height:100vh!important;object-fit:contain!important;background:#000!important}'+" +
+                // 装饰元素:隐藏
+                "    '.video_right,.video_btnBar,.bg_top_h_tile,.bg_top_owner,.bg_bottom_h_tile,header,footer,nav,.vspace,.column_wrapper{display:none!important}';" +
+                "  function applyCss(){" +
+                "    if(document.getElementById('cctv-tv-style'))return;" +
+                "    var s=document.createElement('style');" +
+                "    s.id='cctv-tv-style';" +
+                "    s.textContent=css;" +
+                "    (document.head||document.documentElement).appendChild(s);" +
+                "  }" +
+                "  function stripImages(){" +
                 "    var imgs=document.getElementsByTagName('img');" +
-                "    for(var i=0;i<imgs.length;i++){try{imgs[i].src='';}catch(e){}}" +
-                "    var kw=['login','index','daohang','grey','jquery'];" +
+                "    for(var i=0;i<imgs.length;i++){try{imgs[i].src='';imgs[i].removeAttribute('src');}catch(e){}}" +
+                "  }" +
+                "  function stripScripts(){" +
+                "    var kw=['login','index','daohang','grey','jquery.qrcode','tinyscrollbar','shareindex','zhibo_shoucang','h5_shield','cntv_Advertise'];" +
                 "    var scripts=document.getElementsByTagName('script');" +
                 "    for(var j=0;j<scripts.length;j++){" +
                 "      var s=scripts[j].src||'';" +
-                "      for(var k=0;k<kw.length;k++){if(s.indexOf(kw[k])>=0){try{scripts[j].src='';}catch(e){}break;}}" +
+                "      for(var k=0;k<kw.length;k++){if(s.indexOf(kw[k])>=0){try{scripts[j].parentNode&&scripts[j].parentNode.removeChild(scripts[j]);}catch(e){}break;}}" +
                 "    }" +
-                "    var cls=['newmap','newtopbz','newtopbzTV','column_wrapper'];" +
-                "    for(var c=0;c<cls.length;c++){" +
-                "      var nodes=document.getElementsByClassName(cls[c]);" +
-                "      for(var n=0;n<nodes.length;n++){try{nodes[n].innerHTML='';}catch(e){}}" +
-                "    }" +
-                "    setTimeout(FastLoading,4);" +
+                "  }" +
+                "  function FastLoading(){" +
+                "    applyCss();" +
+                "    stripImages();" +
+                "    stripScripts();" +
+                "    // 限制最多跑 30 秒,避免内存泄漏
+                "    if(window.__cctvFlStart===undefined)window.__cctvFlStart=Date.now();" +
+                "    if(Date.now()-window.__cctvFlStart<30000)setTimeout(FastLoading,200);" +
                 "  }" +
                 "  if(document.readyState==='complete'||document.readyState==='interactive'){" +
                 "    FastLoading();" +
@@ -150,33 +170,56 @@ public final class MainActivity extends Activity {
                 "    document.addEventListener('DOMContentLoaded',FastLoading);" +
                 "  }" +
                 "})()";
-        view.evaluateJavascript(js, value -> {
-            // 不管结果,继续白屏检测
-        });
-        // gen 仅用于防止串台;这里没有 callback,所以忽略
+        view.evaluateJavascript(js, null);
         if (gen != loadGeneration) { /* cut over happened */ }
     }
 
     /**
-     * 页面加载完注入 AutoFullscreen(每 16ms 检查一次):
-     *  央视的播放器在视频真正开始后才会注入 #player_pagefullscreen_yes_player 这个按钮。
-     *  看到就 click() 一下,央视自己会切到"网页全屏"布局(隐藏顶/底/侧栏,只留播放器)。
+     * 页面加载完注入 AutoFullscreen:
+     *  不再依赖 click "网页全屏" 按钮(在某些频道上 CCTV 自己的切换是异步的,点一次不一定生效)。
+     *  直接用 CSS 把 video 元素拉成 position:fixed 100vw/100vh,完全占满屏幕。
+     *  同时设音量为 1,尝试调用 play() 自动播放。
      */
     private void injectAutoFullscreen(WebView view) {
         final int gen = loadGeneration;
         String js =
                 "(function(){" +
-                "  function AutoFullscreen(){" +
-                "    var btn=document.querySelector('#player_pagefullscreen_yes_player')||document.querySelector('.videoFull');" +
-                "    if(btn){" +
-                "      try{btn.click();}catch(e){}" +
-                "      var v=document.querySelector('video');" +
-                "      if(v){try{v.volume=1;}catch(e){}}" +
-                "    }else{" +
-                "      setTimeout(AutoFullscreen,16);" +
+                "  function ForceFullscreen(){" +
+                "    var v=document.querySelector('video');" +
+                "    if(v){" +
+                "      try{v.volume=1;}catch(e){}" +
+                "      try{v.play();}catch(e){}" +
+                "      // 拉成全屏\n" +
+                "      v.style.position='fixed';" +
+                "      v.style.left='0';" +
+                "      v.style.top='0';" +
+                "      v.style.width='100vw';" +
+                "      v.style.height='100vh';" +
+                "      v.style.zIndex='999999';" +
+                "      v.style.objectFit='contain';" +
+                "      v.style.background='#000';" +
+                "    }" +
+                "    // 兜底:即使 video 元素还没出现,也确保 #player 容器占满\n" +
+                "    var p=document.getElementById('player');" +
+                "    if(p){" +
+                "      p.style.position='fixed';" +
+                "      p.style.left='0';" +
+                "      p.style.top='0';" +
+                "      p.style.width='100vw';" +
+                "      p.style.height='100vh';" +
+                "      p.style.zIndex='999998';" +
+                "      p.style.background='#000';" +
                 "    }" +
                 "  }" +
-                "  AutoFullscreen();" +
+                "  ForceFullscreen();" +
+                "  // 每 300ms 再跑一次,持续 8 秒,确保 video 元素出现后被拉满\n" +
+                "  var count=0;" +
+                "  function loop(){" +
+                "    ForceFullscreen();" +
+                "    count++;" +
+                "    if(count<26)setTimeout(loop,300);" +
+                "  }" +
+                "  setTimeout(loop,300);" +
                 "})()";
         view.evaluateJavascript(js, null);
         if (gen != loadGeneration) { /* cut over happened */ }
@@ -201,7 +244,8 @@ public final class MainActivity extends Activity {
 
     /**
      * 8 秒后检查页面里到底有没有 video 元素。
-     * 没有 → 提示白屏,让用户按 ↓ 跳下一个。
+     * 没有 → 自动跳下一个频道(而不是等用户手动按)。
+     * 有但暂停 → 调 play() 强制播放。
      */
     private void scheduleWhiteScreenCheck() {
         final int gen = loadGeneration;
@@ -219,7 +263,12 @@ public final class MainActivity extends Activity {
                 String state = value.toString();
                 if (state.contains("NO_VIDEO")) {
                     Toast.makeText(MainActivity.this,
-                            "频道暂不可用,按 下方向键 跳下一个", Toast.LENGTH_LONG).show();
+                            "此频道暂不可用,自动跳下一个", Toast.LENGTH_SHORT).show();
+                    // 延迟 1 秒再切,让用户看到提示
+                    handler.postDelayed(() -> {
+                        if (gen != loadGeneration) return;
+                        loadChannel(channelIndex + 1);
+                    }, 1000);
                 } else if (state.contains("PAUSED")) {
                     webView.evaluateJavascript(
                             "(function(){var v=document.querySelector('video');if(v){v.play();}return true;})()",
