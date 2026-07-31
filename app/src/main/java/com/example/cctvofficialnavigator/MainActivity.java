@@ -129,12 +129,13 @@ public final class MainActivity extends Activity {
                 "(function(){" +
                 "  if(window.__cctvFastLoadingInjected)return;" +
                 "  window.__cctvFastLoadingInjected=true;" +
-                // CSS:强制让 #player 容器占满整个 WebView,隐藏一切装饰元素
+                // CSS:强制让播放器的外层容器占满 100vw/100vh,隐藏装饰元素
+                // 关键:绝对不要在 video 元素上加 width/height/object-fit — liveplayer.js 会自己管
                 "  var css=" +
                 "    'html,body{width:100%!important;height:100%!important;margin:0!important;padding:0!important;background:#000!important;overflow:hidden!important}'+" +
-                "    '.jiemuguanwang18950_zhibo_ind01,.zhibo19629_ind01,.playingVideo{width:100vw!important;height:100vh!important;margin:0!important;padding:0!important;position:absolute!important;left:0!important;top:0!important}'+" +
-                "    '.video_left,.video_flash,#player{width:100vw!important;height:100vh!important;margin:0!important;padding:0!important;position:absolute!important;left:0!important;top:0!important;background:#000!important}'+" +
-                "    'video{width:100vw!important;height:100vh!important;object-fit:contain!important;background:#000!important}'+" +
+                "    '.jiemuguanwang18950_zhibo_ind01,.zhibo19629_ind01,.playingVideo{width:100vw!important;height:100vh!important;margin:0!important;padding:0!important;position:absolute!important;left:0!important;top:0!important;right:0!important;bottom:0!important}'+" +
+                "    '.video_left,.video_flash{width:100vw!important;height:100vh!important;margin:0!important;padding:0!important;position:absolute!important;left:0!important;top:0!important;right:0!important;bottom:0!important;background:#000!important}'+" +
+                "    '#player{width:100vw!important;height:100vh!important;margin:0!important;padding:0!important;background:#000!important;position:relative!important}'+" +
                 // 装饰元素:隐藏
                 "    '.video_right,.video_btnBar,.bg_top_h_tile,.bg_top_owner,.bg_bottom_h_tile,header,footer,nav,.vspace,.column_wrapper{display:none!important}';" +
                 "  function applyCss(){" +
@@ -175,45 +176,27 @@ public final class MainActivity extends Activity {
 
     /**
      * 页面加载完注入 AutoFullscreen:
-     *  不再依赖 click "网页全屏" 按钮(在某些频道上 CCTV 自己的切换是异步的,点一次不一定生效)。
-     *  直接用 CSS 把 video 元素拉成 position:fixed 100vw/100vh,完全占满屏幕。
-     *  同时设音量为 1,尝试调用 play() 自动播放。
+     *  关键修正:不再修改 video 元素自身的 style(避免覆盖 liveplayer.js 注入的 src/size),
+     *  只调音量和尝试 play()。
+     *  全屏布局完全由 FastLoading 注入的 CSS(针对 .video_left / .video_flash / .playingVideo 等
+     *  外层容器)负责。
      */
     private void injectAutoFullscreen(WebView view) {
         final int gen = loadGeneration;
         String js =
                 "(function(){" +
-                "  function ForceFullscreen(){" +
+                "  function Nudge(){" +
                 "    var v=document.querySelector('video');" +
                 "    if(v){" +
                 "      try{v.volume=1;}catch(e){}" +
+                "      try{v.muted=false;}catch(e){}" +
                 "      try{v.play();}catch(e){}" +
-                "      v.style.position='fixed';" +
-                "      v.style.left='0';" +
-                "      v.style.top='0';" +
-                "      v.style.width='100vw';" +
-                "      v.style.height='100vh';" +
-                "      v.style.zIndex='999999';" +
-                "      v.style.objectFit='contain';" +
-                "      v.style.background='#000';" +
-                "    }" +
-                "    // 兜底:即使 video 元素还没出现,也确保 #player 容器占满\n" +
-                "    var p=document.getElementById('player');" +
-                "    if(p){" +
-                "      p.style.position='fixed';" +
-                "      p.style.left='0';" +
-                "      p.style.top='0';" +
-                "      p.style.width='100vw';" +
-                "      p.style.height='100vh';" +
-                "      p.style.zIndex='999998';" +
-                "      p.style.background='#000';" +
                 "    }" +
                 "  }" +
-                "  ForceFullscreen();" +
-                "  // 每 300ms 再跑一次,持续 8 秒,确保 video 元素出现后被拉满\n" +
+                "  Nudge();" +
                 "  var count=0;" +
                 "  function loop(){" +
-                "    ForceFullscreen();" +
+                "    Nudge();" +
                 "    count++;" +
                 "    if(count<26)setTimeout(loop,300);" +
                 "  }" +
@@ -241,9 +224,11 @@ public final class MainActivity extends Activity {
     }
 
     /**
-     * 8 秒后检查页面里到底有没有 video 元素。
-     * 没有 → 自动跳下一个频道(而不是等用户手动按)。
-     * 有但暂停 → 调 play() 强制播放。
+     * 8 秒后检查页面里到底有没有 video 元素,以及视频是否真的有内容。
+     *  - video 元素不存在 → 自动跳下一个频道
+     *  - video 元素存在但 readyState < 2 (HAVE_CURRENT_DATA) 或 videoWidth=0 → 流还没加载好,
+     *    直接跳下一个(某些频道 CCTV 后端没流)
+     *  - video.paused=true → 调 play() 强制播放
      */
     private void scheduleWhiteScreenCheck() {
         final int gen = loadGeneration;
@@ -252,21 +237,23 @@ public final class MainActivity extends Activity {
             String js =
                     "(function(){" +
                     "  var v=document.querySelector('video');" +
-                    "  if(v){return 'OK:'+(v.paused?'PAUSED':'PLAYING');}" +
-                    "  return 'NO_VIDEO';" +
+                    "  if(!v){return 'NO_VIDEO';}" +
+                    "  var rs=v.readyState||0;" +
+                    "  var w=v.videoWidth||0;" +
+                    "  if(rs<2 || w===0){return 'NOT_READY:'+rs+','+w;}" +
+                    "  return 'OK:'+rs+','+w+','+(v.paused?'PAUSED':'PLAYING');" +
                     "})()";
             webView.evaluateJavascript(js, value -> {
                 if (gen != loadGeneration) return;
                 if (value == null) return;
                 String state = value.toString();
-                if (state.contains("NO_VIDEO")) {
+                if (state.contains("NO_VIDEO") || state.contains("NOT_READY")) {
                     Toast.makeText(MainActivity.this,
                             "此频道暂不可用,自动跳下一个", Toast.LENGTH_SHORT).show();
-                    // 延迟 1 秒再切,让用户看到提示
                     handler.postDelayed(() -> {
                         if (gen != loadGeneration) return;
                         loadChannel(channelIndex + 1);
-                    }, 1000);
+                    }, 1200);
                 } else if (state.contains("PAUSED")) {
                     webView.evaluateJavascript(
                             "(function(){var v=document.querySelector('video');if(v){v.play();}return true;})()",
