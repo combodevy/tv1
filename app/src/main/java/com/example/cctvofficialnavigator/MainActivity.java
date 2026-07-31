@@ -152,16 +152,20 @@ public final class MainActivity extends Activity {
                 "    if(document.head){document.head.appendChild(s);}else{document.addEventListener('DOMContentLoaded',function(){if(document.head&&!document.getElementById('cctv-tv-style')){document.head.appendChild(s);}});}" +
                 "  }" +
                 "  function stripImages(){" +
+                // 极保守:只清空 #player 容器外、与播放器无关的大图(> 200px)
                 "    var imgs=document.getElementsByTagName('img');" +
-                "    for(var i=0;i<imgs.length;i++){try{imgs[i].src='';imgs[i].removeAttribute('src');}catch(e){}}" +
+                "    for(var i=0;i<imgs.length;i++){" +
+                "      var img=imgs[i];" +
+                "      var inPlayer=img.closest('#player,.video_flash,.video_left')!==null;" +
+                "      if(inPlayer)continue;" +
+                "      var w=img.naturalWidth||img.width||0;var h=img.naturalHeight||img.height||0;" +
+                "      if(w>200||h>200){try{img.src='';img.removeAttribute('src');}catch(e){}}" +
+                "    }" +
                 "  }" +
                 "  function stripScripts(){" +
-                "    var kw=['login','index','daohang','grey','jquery.qrcode','tinyscrollbar','shareindex','zhibo_shoucang','h5_shield','cntv_Advertise'];" +
-                "    var scripts=document.getElementsByTagName('script');" +
-                "    for(var j=0;j<scripts.length;j++){" +
-                "      var s=scripts[j].src||'';" +
-                "      for(var k=0;k<kw.length;k++){if(s.indexOf(kw[k])>=0){try{scripts[j].parentNode&&scripts[j].parentNode.removeChild(scripts[j]);}catch(e){}break;}}" +
-                "    }" +
+                // 极保守:不删任何 script。CCTV 的 liveplayer.js 在某些频道上会动态 import
+                // 其它脚本,如果我们 strip 错了关键字,会把它们干掉导致播放器加载不到流
+                "    /* DISABLED: 之前会误杀 liveplayer.js 动态 import 的脚本 */" +
                 "  }" +
                 "  function FastLoading(){" +
                 "    applyCss();" +
@@ -285,6 +289,14 @@ public final class MainActivity extends Activity {
             if (event.getKeyCode() == KeyEvent.KEYCODE_MENU) {
                 showChannelHint(ChannelCatalog.CHANNELS.get(channelIndex).name);
                 return true;
+            }
+            // 数字键 0-9: 跳到对应频道(便于调试)
+            if (event.getKeyCode() >= KeyEvent.KEYCODE_0 && event.getKeyCode() <= KeyEvent.KEYCODE_9) {
+                int idx = event.getKeyCode() - KeyEvent.KEYCODE_0;
+                if (idx < ChannelCatalog.CHANNELS.size()) {
+                    loadChannel(idx);
+                    return true;
+                }
             }
         }
         return super.dispatchKeyEvent(event);
