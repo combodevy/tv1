@@ -45,7 +45,7 @@ import java.util.Locale;
 public final class MainActivity extends Activity {
     private static final String SAVED_CHANNEL_INDEX = "channel_index";
     private static final long CHANNEL_HINT_DURATION_MS = 1800L;
-    private static final long WHITE_SCREEN_CHECK_DELAY_MS = 8000L;
+    private static final long WHITE_SCREEN_CHECK_DELAY_MS = 15000L;
 
     private WebView webView;
     private TextView channelHint;
@@ -235,8 +235,9 @@ public final class MainActivity extends Activity {
     }
 
     /**
-     * 8 秒后检查页面里到底有没有 video 元素。
-     * 没有 → 自动跳下一个频道(而不是等用户手动按)。
+     * 15 秒后检查页面里到底有没有 video 元素。
+     * 没有 → 仅显示提示,让用户决定是"重试当前频道"还是"切下一个频道",
+     *       不再自动跳(CCTV-3/6/8 等版权敏感频道可能只是慢,不该擅自跳过)。
      * 有但暂停 → 调 play() 强制播放。
      */
     private void scheduleWhiteScreenCheck() {
@@ -255,12 +256,7 @@ public final class MainActivity extends Activity {
                 String state = value.toString();
                 if (state.contains("NO_VIDEO")) {
                     Toast.makeText(MainActivity.this,
-                            "此频道暂不可用,自动跳下一个", Toast.LENGTH_SHORT).show();
-                    // 延迟 1 秒再切,让用户看到提示
-                    handler.postDelayed(() -> {
-                        if (gen != loadGeneration) return;
-                        loadChannel(channelIndex + 1);
-                    }, 1000);
+                            "此频道暂不可用  ·  菜单键重试  ·  上/下键切台", Toast.LENGTH_LONG).show();
                 } else if (state.contains("PAUSED")) {
                     webView.evaluateJavascript(
                             "(function(){var v=document.querySelector('video');if(v){v.play();}return true;})()",
@@ -282,7 +278,8 @@ public final class MainActivity extends Activity {
                 return true;
             }
             if (event.getKeyCode() == KeyEvent.KEYCODE_MENU) {
-                showChannelHint(ChannelCatalog.CHANNELS.get(channelIndex).name);
+                // 菜单键:重试当前频道(CCTV-3/6/8 等白屏时很有用)
+                loadChannel(channelIndex);
                 return true;
             }
         }
