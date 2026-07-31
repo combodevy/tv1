@@ -115,7 +115,8 @@ public final class MainActivity extends Activity {
             public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
                 injectAutoFullscreen(view);
-                scheduleWhiteScreenCheck();
+                // 不在这里再调 scheduleWhiteScreenCheck(loadChannel 已调过,
+                // 否则 CCTV 心跳型页面的多次 onPageFinished 会重置倒计时)
             }
         });
     }
@@ -224,10 +225,14 @@ public final class MainActivity extends Activity {
         int count = ChannelCatalog.CHANNELS.size();
         channelIndex = ((requestedIndex % count) + count) % count;
         Channel channel = ChannelCatalog.CHANNELS.get(channelIndex);
-        // 切换频道时先清掉诊断面板
-        debugPanel.setVisibility(View.GONE);
+        // 切换频道时先清掉诊断面板,并显示"加载中"占位
+        debugPanel.setText("加载中... 频道=" + channel.name + "\nURL=" + channel.officialUrl);
+        debugPanel.setVisibility(View.VISIBLE);
         webView.loadUrl(channel.officialUrl);
         showChannelHint(channel.name);
+        // 立即开始白屏倒计时,不依赖 onPageFinished
+        // (CCTV 页面有持续心跳,onPageFinished 在某些频道永远不触发)
+        scheduleWhiteScreenCheck();
     }
 
     private void showChannelHint(String channelName) {
