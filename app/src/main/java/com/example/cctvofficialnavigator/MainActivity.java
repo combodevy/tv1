@@ -113,6 +113,16 @@ public final class MainActivity extends Activity {
             public void onPageStarted(WebView view, String url, Bitmap favicon) {
                 super.onPageStarted(view, url, favicon);
                 updateDebugPanel("onPageStarted → " + shortenUrl(url), null);
+                // 1) 最早期:document.write polyfill(必须在任何页面 JS 之前注入,否则晚了)
+                //    Chromium 53+ 起对"parser-blocking + cross-site + document.write 插入的<script>"
+                //    在 2G/慢网下直接不执行(2G Intervention)。CCTV 的播放器启动链里有用
+                //    document.write('<script src="https://r.img.cctvpics.com/.../gray*.js">') 加载
+                //    公共库(不同 eTLD+1,cctv.com vs cctvpics.com),命中这个规则后脚本被丢弃,
+                //    后续 createLivePlayer() 永远不跑→CCTV-3/6/8 白屏。
+                //    修复:在最早时机 hook document.write,把 <script src=...> 转成
+                //    createElement('script') 异步插入,绕开 Chromium 干预。
+                injectDocumentWritePatch(view);
+                // 2) CSS 拉满容器 + 隐藏装饰(顺序必须在补丁之后,不能影响 document.write 覆盖)
                 injectFastLoading(view);
             }
 
@@ -151,6 +161,67 @@ public final class MainActivity extends Activity {
                 }
             }
         });
+    }
+
+    /**
+     * onPageStarted 最早期注入:hook document.write,把
+     * document.write('<script src="跨站URL">...</script>') 转成
+     * document.createElement('script') 异步插入。
+     *
+     * 原因:Chromium 53+ 的"2G Intervention"会在慢网/2G时直接丢弃
+     * "parser-blocking + cross-site + document.write 插入"的脚本,
+     * cctv.com 页面会通过 document.write 从 r.img.cctvpics.com(不同 eTLD+1)
+     * 加载 gray*.js / DEPA 公共脚本,被丢弃后 createLivePlayer() 不执行,
+     * 导致 CCTV-3/6/8 白屏(此问题只在"页面自己通过 document.write 注入跨站脚本"时出现,
+     * CCTV-1/9 的启动顺序不同,侥幸没被拦)。
+     */
+    private void injectDocumentWritePatch(WebView view) {
+        String js =
+                "(function(){" +
+                "  if(window.__cctvDwPatched)return;" +
+                "  window.__cctvDwPatched=true;" +
+                "  var origWrite=document.write.bind(document);" +
+                "  var origWriteln=document.writeln.bind(document);" +
+                // 从 write 的字符串里抽取 <script src="...">[...]</script>
+                "  function extractScripts(html){" +
+                "    if(!html||typeof html!=='string')return [];" +
+                "    var out=[];" +
+                "    var re=/<script([^>]*)>([\\s\\S]*?)<\\/script>/gi;" +
+                "    var m;" +
+                "    while((m=re.exec(html))!==null){" +
+                "      var attrs=m[1]||'';" +
+                "      var body=m[2]||'';" +
+                "      var srcM=attrs.match(/src\\s*=\\s*['\\\"]([^'\\\"]+)['\\\"]/i);" +
+                "      var asyncM=attrs.match(/async/i);" +
+                "      var deferM=attrs.match(/defer/i);" +
+                "      out.push({src:srcM?srcM[1]:'',inline:body,async:!!asyncM,defer:!!deferM});" +
+                "    }" +
+                "    return out;" +
+                "  }" +
+                "  function insertScript(s){" +
+                "    try{" +
+                "      var el=document.createElement('script');" +
+                "      if(s.src){el.src=s.src;el.async=s.async||s.defer||true;}" +
+                "      else if(s.inline){el.text=s.inline;}" +
+                "      else{return;}" +
+                "      var p=document.currentScript&&document.currentScript.parentNode;" +
+                "      p=p||document.head||document.documentElement;" +
+                "      p.appendChild(el);" +
+                "    }catch(e){}" +
+                "  }" +
+                // 剥离字符串里所有 <script> 标签,转成 createElement
+                "  function patch(htmlStr){" +
+                "    var scripts=extractScripts(htmlStr);" +
+                "    if(scripts.length===0){return htmlStr;}" +
+                "    for(var i=0;i<scripts.length;i++){insertScript(scripts[i]);}" +
+                // 已经用 createElement 插入了,就把 write 里的 <script> 块删掉,避免被 parser 又遇到(再被 Chromium 拦截一次)
+                "    var cleaned=String(htmlStr).replace(/<script[^>]*>[\\s\\S]*?<\\/script>/gi,'');" +
+                "    return cleaned;" +
+                "  }" +
+                "  document.write=function(){var s='';for(var i=0;i<arguments.length;i++)s+=arguments[i];var c=patch(s);if(c)origWrite(c);};" +
+                "  document.writeln=function(){var s='';for(var i=0;i<arguments.length;i++)s+=arguments[i];s+='\\n';var c=patch(s);if(c)origWriteln(c);};" +
+                "})()";
+        view.evaluateJavascript(js, null);
     }
 
     /**
@@ -496,6 +567,12 @@ public final class MainActivity extends Activity {
         public boolean onConsoleMessage(android.webkit.ConsoleMessage cm) {
             String msg = cm.message();
             int level = cm.messageLevel().ordinal();
+            // 浏览器自身的 document.write 跨站警告:不是致命 JS 异常,降为 INFO,别霸住面板
+            // 典型内容:"A parser-blocking, cross site ... is invoked via document.write ... MAY be blocked"
+            if (msg.contains("parser-blocking") && msg.contains("document.write")) {
+                Log.d("CCTV-TV", "[I-DW] " + msg);
+                return true;
+            }
             // LOG_LEVEL_ERROR=2, LOG_LEVEL_WARNING=1, LOG_LEVEL_LOG=0
             switch (level) {
                 case 2:
