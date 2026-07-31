@@ -81,10 +81,9 @@ public final class MainActivity extends Activity {
         settings.setMediaPlaybackRequiresUserGesture(false);
         settings.setLoadWithOverviewMode(true);
         settings.setUseWideViewPort(true);
-        // 移动端 UA:CCTV 返回 H5 移动版,布局更紧凑
-        settings.setUserAgentString(
-                "Mozilla/5.0 (Linux; Android 13; TV) AppleWebKit/537.36 (KHTML, like Gecko) "
-                        + "Chrome/120.0.0.0 Mobile Safari/537.36 CctvOfficialNavigator/1.0");
+        // 不强制改成移动端 UA — CCTV 移动版没有 player_fullscreen_no_player 全屏按钮
+        // 用默认桌面 UA,CCTV 会返回带播放器全屏按钮的桌面页面
+        // WebSettings 自带默认 desktop UA 即可
         webView.setWebChromeClient(new WebChromeClient() {
             @Override
             public void onShowCustomView(View view, CustomViewCallback callback) {
@@ -140,49 +139,49 @@ public final class MainActivity extends Activity {
     }
 
     /**
-     * 每次页面加载完都跑:先注 CSS,然后 2.5 秒后找 iframe,找到了就跳过去(纯播放器页更好控制),
-     * 找不到就尝试点页面的播放按钮,再尝试 requestFullscreen。
+     * 每次页面加载完都跑:
+     *  1. 立刻注入全屏 CSS
+     *  2. 1.5s 后开始点 #player_fullscreen_no_player(每秒点一次,最多 5 次,直到 CCTV 自己进全屏)
+     *  3. 兜底:如果上面全部没点中,2.5s 后找 player.cntv.cn iframe 跳过去
      */
     private void applyFullscreenAndAutoPlay(String loadedUrl) {
         // 1. 立即注入全屏 CSS
         injectFullscreenCSS();
 
-        // 2. 判断当前是不是已经在 player.cntv.cn 域
-        boolean onIframeHost = loadedUrl != null && loadedUrl.contains("player.cntv.cn");
+        // 2. CCTV 自己的"全屏"按钮(桌面版页面才有这个 id,移动版没有 — 这就是为什么之前我点不到)
+        //    重试 5 次,每次间隔 1s — CCTV 是异步渲染,按钮可能晚出来
+        for (int delay : new int[]{1500, 2500, 3500, 5000, 7000}) {
+            handler.postDelayed(this::tryClickCctvFullscreenButton, delay);
+        }
 
-        if (onIframeHost) {
-            // 已经在纯播放器页,直接尝试播放 + 全屏
-            handler.postDelayed(this::tryClickPlayAndFullscreen, 800);
-        } else {
-            // 在 CCTV 父页,等一下再去找 iframe
+        // 3. 兜底:iframe 跳转
+        if (loadedUrl == null || !loadedUrl.contains("player.cntv.cn")) {
             if (iframeRedirectCount < 2) {
                 handler.postDelayed(this::tryNavigateToIframe, IFRAME_LOOKUP_DELAY_MS);
-            } else {
-                // 兜底:跳太多次了,直接点播放
-                handler.postDelayed(this::tryClickPlayAndFullscreen, 1000);
             }
         }
     }
 
     private void injectFullscreenCSS() {
+        // 故意保守:只精确隐藏 CCTV 页面 chrome 元素(header / nav / footer / 顶部固定条等),
+        // 不要粗暴隐藏 body > *,避免把 #player_fullscreen_no_player 的父元素也隐了
         String js =
                 "(function(){" +
                 "  var s=document.createElement('style');" +
                 "  s.id='cctv-nav-style';" +
                 "  s.innerHTML=[" +
-                "    'html,body{margin:0!important;padding:0!important;background:#000!important;" +
-                "       overflow:hidden!important;width:100%!important;height:100%!important}'," +
-                "    'body>*:not(iframe):not(video):not(.player):not(.video):not(.player-container):not(.video-container):not(.live-player):not(#player){" +
+                "    'html,body{margin:0!important;padding:0!important;background:#000!important;overflow:hidden!important}'," +
+                // 顶部固定条
+                "    'header,.header,.top,.top-bar,.navbar,.nav,.topnav," +
+                "       .top-menu,.top-nav,.toolbar,.search-bar," +
+                "       .index_nav,.index-header,.head,#header,.index_head,.live_head{" +
                 "       display:none!important}'," +
-                "    'body>header,body>nav,body>footer,body>.header,body>.top,body>.nav,body>.top-bar," +
-                "       body>.search,body>.menu,body>.toolbar,body>.side,body>.sidebar,body>.aside{" +
+                // 底部版权 / 友情
+                "    'footer,.footer,.bottom,.copyright,.friend-link,.friendlinks{" +
                 "       display:none!important}'," +
-                "    'iframe,video,#player,.player,.player-container,.video-container,.live-player,.video,.video-wrap{" +
-                "       position:fixed!important;top:0!important;left:0!important;" +
-                "       width:100vw!important;height:100vh!important;" +
-                "       max-width:none!important;max-height:none!important;" +
-                "       z-index:99999!important;border:0!important;background:#000!important}'," +
-                "    'iframe[allowfullscreen]{allowfullscreen:true;webkitallowfullscreen:true;mozallowfullscreen:true}'" +
+                // 右侧边栏频道列表(避免占空间)
+                "    '.side,.sidebar,.aside,.right-bar,.channel-list,.rightside,.live-side,.rightbar{" +
+                "       display:none!important}'" +
                 "  ].join('');" +
                 "  var old=document.getElementById('cctv-nav-style');" +
                 "  if(old)old.remove();" +
@@ -223,6 +222,43 @@ public final class MainActivity extends Activity {
             } else {
                 tryClickPlayAndFullscreen();            // 没 iframe,兜底点播放
             }
+        });
+    }
+
+    /**
+     * 核心:点 CCTV 页面自己的"全屏"按钮(图里那个红箭头指的)。
+     * 桌面版页面才有 #player_fullscreen_no_player 这个 id,移动版没有。
+     * 点这个按钮,CCTV 自己会处理成"全屏模式",比 HTML5 native 更稳。
+     * 即使这个按钮的父元素被我们的 CSS 隐藏了,程序化 click() 仍能触发。
+     */
+    private void tryClickCctvFullscreenButton() {
+        final int gen = loadGeneration;
+        String js =
+                "(function(){" +
+                "  // 1. 优先点 #player_fullscreen_no_player(CCTV 自带"全屏"按钮)" +
+                "  var img=document.getElementById('player_fullscreen_no_player');" +
+                "  if(img){" +
+                "    // 找最近的 button / a / [onclick] 父元素,真正的 click 事件挂在它上面" +
+                "    var clickable=img.closest('button,a,[onclick],[role=\"button\"]')||img;" +
+                "    clickable.click();" +
+                "    return 'CLICKED_NO_PLAYER';" +
+                "  }" +
+                // 2. 兜底:任何带 fullscreen 关键字的 img/element
+                "  var fallbacks=[" +
+                "    'img[src*=\"fullscreen\" i]'," +
+                "    '[id*=\"fullscreen\" i]','[class*=\"fullscreen\" i]'," +
+                "    '#player_fullscreen_player'" +
+                "  ];" +
+                "  for(var s of fallbacks){" +
+                "    var el=document.querySelector(s);" +
+                "    if(el){var c=el.closest('button,a,[onclick],[role=\"button\"]')||el;c.click();return 'CLICKED_FALLBACK:'+s;}" +
+                "  }" +
+                "  return 'NOT_FOUND';" +
+                "})()";
+        webView.evaluateJavascript(js, value -> {
+            if (gen != loadGeneration) return;
+            // 拿到结果:CLICKED_NO_PLAYER / CLICKED_FALLBACK / NOT_FOUND
+            // 白屏检测会兜底
         });
     }
 
