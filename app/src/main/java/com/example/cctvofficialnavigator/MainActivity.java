@@ -95,6 +95,11 @@ public final class MainActivity extends Activity {
         settings.setJavaScriptEnabled(true);
         settings.setDomStorageEnabled(true);
         settings.setDatabaseEnabled(true);
+        // 关键:用桌面 Chrome UA,绝对不能用默认 Android WebView 移动 UA。
+        // CCTV 服务器端对移动端 UA 的版权敏感频道(CCTV-3 综艺/CCTV-6 电影/CCTV-8 电视剧)
+        // 直接 302 重定向到 https://m.yangshipin.cn/static/empty.html(刻意空白,引导装央视频 APP)。
+        // 用桌面 UA,才能拿到正确的 tv.cctv.com/live/cctv*/ 桌面版页面(带 .video_flash / #player 容器)。
+        settings.setUserAgentString("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36");
         settings.setLoadsImagesAutomatically(true);
         settings.setBlockNetworkImage(false);
         settings.setMediaPlaybackRequiresUserGesture(false);
@@ -113,6 +118,21 @@ public final class MainActivity extends Activity {
             public void onPageStarted(WebView view, String url, Bitmap favicon) {
                 super.onPageStarted(view, url, favicon);
                 updateDebugPanel("onPageStarted → " + shortenUrl(url), null);
+                // 兜底防御:如果 CCTV 重定向到了移动端空白页(尽管我们已设置桌面 UA),
+                // 立刻重新加载当前频道的官方桌面 URL,并附加 User-Agent HTTP 头(强上双保险)。
+                // 典型恶意重定向:m.yangshipin.cn/static/empty.html(版权敏感频道 CCTV-3/6/8)
+                if (url != null && url.contains("yangshipin.cn/static/empty")) {
+                    Channel cur = ChannelCatalog.CHANNELS.get(channelIndex);
+                    Log.w("CCTV-TV", "被 CCTV 重定向到 " + url + " → 重新加载桌面版 " + cur.officialUrl);
+                    updateDebugPanel("REDIRECT_BLOCKED", "检测到被重定向到 mobile 空页\n正在以桌面 UA 重载:" + shortenUrl(cur.officialUrl));
+                    java.util.Map<String, String> headers = new java.util.HashMap<>();
+                    headers.put("User-Agent",
+                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36");
+                    headers.put("Referer", "https://tv.cctv.com/");
+                    view.stopLoading();
+                    view.loadUrl(cur.officialUrl, headers);
+                    return; // 不要跑下面的 CSS/补丁注入,等重新 load 的 onPageStarted
+                }
                 // 1) 最早期:document.write polyfill(必须在任何页面 JS 之前注入,否则晚了)
                 //    Chromium 53+ 起对"parser-blocking + cross-site + document.write 插入的<script>"
                 //    在 2G/慢网下直接不执行(2G Intervention)。CCTV 的播放器启动链里有用
