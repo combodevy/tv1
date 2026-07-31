@@ -39,18 +39,17 @@ jobs:
           done
 
       # 安装 Android SDK
+      # 关键:固定 cmdline-tools 11.0,匹配 build-tools 34.0.0,避免 XML v3 vs v4 不匹配警告和重读
       - name: Setup Android SDK
         id: android-sdk
         uses: android-actions/setup-android@v3
         with:
-          cmdline-tools: latest
+          cmdline-tools: '11.0'
           platforms: android-34
           build-tools: 34.0.0
           cache-disabled: false
-
-      # 同意 SDK 许可
-      - name: Accept SDK licenses
-        run: yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses > /dev/null
+          # 显式开启自动接受 license(默认就是 true,这里写明以避免上一步显式 yes 的卡顿)
+          licenses: accept
 
       # 调试:确认 SDK 已正确安装(没有这一行,后面 AGP 静默失败时不知道原因)
       - name: Verify Android SDK
@@ -86,12 +85,12 @@ jobs:
         run: chmod +x ./gradlew
 
       # 编译 Debug APK
-      # --rerun-tasks: 强制重跑所有任务,不用任何缓存
-      # --no-build-cache: 关闭 build cache
+      # --rerun-tasks: 强制重跑所有 task,但 build cache 仍可写入(下次构建加速)
+      # --max-workers=4: GitHub runner 4 核并行
       # --no-daemon: CI 上不必要
       # --stacktrace: 出错时看堆栈
       - name: Build APK
-        run: ./gradlew assembleDebug --no-daemon --rerun-tasks --no-build-cache --stacktrace
+        run: ./gradlew assembleDebug --no-daemon --rerun-tasks --max-workers=4 --stacktrace
 
       # 调试:确认 APK 真的生成了
       - name: Verify APK output
