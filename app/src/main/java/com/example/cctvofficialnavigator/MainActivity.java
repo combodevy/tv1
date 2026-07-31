@@ -160,7 +160,6 @@ public final class MainActivity extends Activity {
                 "    applyCss();" +
                 "    stripImages();" +
                 "    stripScripts();" +
-                "    // 限制最多跑 30 秒,避免内存泄漏
                 "    if(window.__cctvFlStart===undefined)window.__cctvFlStart=Date.now();" +
                 "    if(Date.now()-window.__cctvFlStart<30000)setTimeout(FastLoading,200);" +
                 "  }" +
@@ -189,7 +188,6 @@ public final class MainActivity extends Activity {
                 "    if(v){" +
                 "      try{v.volume=1;}catch(e){}" +
                 "      try{v.play();}catch(e){}" +
-                "      // 拉成全屏\n" +
                 "      v.style.position='fixed';" +
                 "      v.style.left='0';" +
                 "      v.style.top='0';" +
