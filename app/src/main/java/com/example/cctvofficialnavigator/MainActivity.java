@@ -2,16 +2,16 @@ package com.example.cctvofficialnavigator;
 
 import android.annotation.SuppressLint;
 import android.app.Activity;
-import android.graphics.Color;
 import android.graphics.Bitmap;
+import android.graphics.Color;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
+import android.view.KeyEvent;
 import android.view.View;
 import android.view.ViewGroup;
-import android.view.KeyEvent;
 import android.view.Window;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
@@ -21,12 +21,16 @@ import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.widget.FrameLayout;
 import android.widget.TextView;
 import android.widget.Toast;
-import android.widget.FrameLayout;
 
 import java.net.URI;
 import java.util.Locale;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 
 /**
  * A remote-first navigator for official CCTV pages. It deliberately has no stream extraction code.
@@ -55,6 +59,9 @@ public final class MainActivity extends Activity {
     private int channelIndex;
     private final Runnable hideChannelHint = () -> channelHint.setVisibility(View.GONE);
     private final Handler handler = new Handler(Looper.getMainLooper());
+    // 倒计时线程:用 background thread 跑,避免被 WebView 加载/JS 阻塞 main thread 导致 postDelayed 永不执行
+    private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+    private java.util.List<ScheduledFuture<?>> pendingChecks = new java.util.ArrayList<>();
     private int loadGeneration = 0;
 
     @Override
@@ -246,14 +253,25 @@ public final class MainActivity extends Activity {
      * 5/10/15/20/30 秒各检查一次页面里到底有没有 video 元素。
      * 没有 → 显示诊断面板(用户一定能看见,不再依赖 Toast)
      * 有但暂停 → 调 play() 强制播放
-     * 多重保险:CCTV 页面有持续心跳,evaluateJavascript callback 偶尔会被吞,
-     *         30 秒后即使 callback 失败,屏幕也会显示"诊断中... 已等 N 秒"
+     *
+     * 用 ScheduledExecutorService 替代 handler.postDelayed:
+     *   CCTV 页面有持续心跳,WebView 在 main thread 疯狂 load + parse + 跑 JS,
+     *   handler.postDelayed 任务被压在队列里没机会跑(用户看到"加载中"永远不变)。
+     *   background thread 的倒计时不被 main thread 阻塞,到时间后 post 回 main thread 更新 UI。
      */
     private void scheduleWhiteScreenCheck() {
+        // 先取消之前还在排队的任务
+        for (ScheduledFuture<?> f : pendingChecks) f.cancel(false);
+        pendingChecks.clear();
         final int gen = loadGeneration;
         long[] delays = {5000L, 10000L, 15000L, 20000L, 30000L};
         for (long delay : delays) {
-            handler.postDelayed(() -> doWhiteScreenCheck(gen, delay), delay);
+            ScheduledFuture<?> future = scheduler.schedule(() -> {
+                if (gen != loadGeneration) return;
+                // 切回 main thread 更新 UI(WebView 必须在 main thread 调)
+                handler.post(() -> doWhiteScreenCheck(gen, delay));
+            }, delay, TimeUnit.MILLISECONDS);
+            pendingChecks.add(future);
         }
     }
 
