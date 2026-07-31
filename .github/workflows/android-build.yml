@@ -1,33 +1,52 @@
-name: Android APK Build
+name: Android Build
 
 on:
   push:
     branches:
       - master
 
+
 jobs:
+
   build:
+
     runs-on: ubuntu-latest
+
 
     steps:
 
+    # 下载你的代码
     - name: Checkout
       uses: actions/checkout@v4
 
+
+    # 安装 JDK
     - name: Setup JDK
       uses: actions/setup-java@v4
       with:
         java-version: '17'
-        distribution: 'temurin'
+        distribution: temurin
 
+
+    # 配置 Gradle
     - name: Setup Gradle
       uses: gradle/actions/setup-gradle@v4
 
+
+    # 如果没有 wrapper，自动生成
+    - name: Generate Gradle Wrapper
+      run: |
+        gradle wrapper --gradle-version 8.6.1
+
+
+    # 编译 APK
     - name: Build APK
       run: |
         chmod +x gradlew
         ./gradlew assembleDebug
 
+
+    # 上传 APK
     - name: Upload APK
       uses: actions/upload-artifact@v4
       with:
