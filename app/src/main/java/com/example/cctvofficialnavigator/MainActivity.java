@@ -129,21 +129,27 @@ public final class MainActivity extends Activity {
                 "(function(){" +
                 "  if(window.__cctvFastLoadingInjected)return;" +
                 "  window.__cctvFastLoadingInjected=true;" +
-                // CSS:强制让播放器的外层容器占满 100vw/100vh,隐藏装饰元素
-                // 关键:绝对不要在 video 元素上加 width/height/object-fit — liveplayer.js 会自己管
+                // CSS:
+                //  - 外层容器(playingVideo / video_left / video_flash) 100vw/100vh + position:absolute 占满
+                //  - #player 容器 100vw/100vh
+                //  - video 元素 width/height 100% 铺满父容器 .video_flash(不写 object-fit,
+                //    避免覆盖 liveplayer.js 的 object-fit 设置)
+                //  - 装饰元素隐藏
                 "  var css=" +
                 "    'html,body{width:100%!important;height:100%!important;margin:0!important;padding:0!important;background:#000!important;overflow:hidden!important}'+" +
                 "    '.jiemuguanwang18950_zhibo_ind01,.zhibo19629_ind01,.playingVideo{width:100vw!important;height:100vh!important;margin:0!important;padding:0!important;position:absolute!important;left:0!important;top:0!important;right:0!important;bottom:0!important}'+" +
-                "    '.video_left,.video_flash{width:100vw!important;height:100vh!important;margin:0!important;padding:0!important;position:absolute!important;left:0!important;top:0!important;right:0!important;bottom:0!important;background:#000!important}'+" +
-                "    '#player{width:100vw!important;height:100vh!important;margin:0!important;padding:0!important;background:#000!important;position:relative!important}'+" +
-                // 装饰元素:隐藏
+                "    '.video_left,.video_flash{width:100vw!important;height:100vh!important;margin:0!important;padding:0!important;position:absolute!important;left:0!important;top:0!important;right:0!important;bottom:0!important;background:#000!important;overflow:hidden!important}'+" +
+                "    '#player{width:100%!important;height:100%!important;margin:0!important;padding:0!important;background:#000!important;position:relative!important;overflow:hidden!important}'+" +
+                "    'video{width:100%!important;height:100%!important;display:block!important}'+" +
                 "    '.video_right,.video_btnBar,.bg_top_h_tile,.bg_top_owner,.bg_bottom_h_tile,header,footer,nav,.vspace,.column_wrapper{display:none!important}';" +
                 "  function applyCss(){" +
-                "    if(document.getElementById('cctv-tv-style'))return;" +
+                "    var existing=document.getElementById('cctv-tv-style');" +
+                "    if(existing){try{existing.textContent=css;}catch(e){}return;}" +
                 "    var s=document.createElement('style');" +
                 "    s.id='cctv-tv-style';" +
                 "    s.textContent=css;" +
-                "    (document.head||document.documentElement).appendChild(s);" +
+                "    // 一定要 append 到 head,如果 head 还没就绪就等下一次循环\n" +
+                "    if(document.head){document.head.appendChild(s);}else{document.addEventListener('DOMContentLoaded',function(){if(document.head&&!document.getElementById('cctv-tv-style')){document.head.appendChild(s);}});}" +
                 "  }" +
                 "  function stripImages(){" +
                 "    var imgs=document.getElementsByTagName('img');" +
@@ -169,6 +175,8 @@ public final class MainActivity extends Activity {
                 "  }else{" +
                 "    document.addEventListener('DOMContentLoaded',FastLoading);" +
                 "  }" +
+                "  // 兜底:即使已经 load 完了,第一帧还是要跑\n" +
+                "  setTimeout(FastLoading,50);" +
                 "})()";
         view.evaluateJavascript(js, null);
         if (gen != loadGeneration) { /* cut over happened */ }
