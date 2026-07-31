@@ -50,6 +50,7 @@ public final class MainActivity extends Activity {
 
     private WebView webView;
     private TextView channelHint;
+    private TextView debugPanel;
     private FrameLayout rootContainer;
     private int channelIndex;
     private final Runnable hideChannelHint = () -> channelHint.setVisibility(View.GONE);
@@ -72,6 +73,7 @@ public final class MainActivity extends Activity {
         setContentView(R.layout.activity_main);
         webView = findViewById(R.id.live_web_view);
         channelHint = findViewById(R.id.channel_hint);
+        debugPanel = findViewById(R.id.debug_panel);
         rootContainer = findViewById(R.id.root_container);
         webView.setBackgroundColor(Color.BLACK);
         channelIndex = savedInstanceState == null ? 0 : savedInstanceState.getInt(SAVED_CHANNEL_INDEX, 0);
@@ -222,6 +224,8 @@ public final class MainActivity extends Activity {
         int count = ChannelCatalog.CHANNELS.size();
         channelIndex = ((requestedIndex % count) + count) % count;
         Channel channel = ChannelCatalog.CHANNELS.get(channelIndex);
+        // 切换频道时先清掉诊断面板
+        debugPanel.setVisibility(View.GONE);
         webView.loadUrl(channel.officialUrl);
         showChannelHint(channel.name);
     }
@@ -247,22 +251,40 @@ public final class MainActivity extends Activity {
                     "(function(){" +
                     "  var v=document.querySelector('video');" +
                     "  if(v){return 'OK:'+(v.paused?'PAUSED':'PLAYING');}" +
-                    // 诊断:返回 CCTV 在白屏上自己显示的文字(body 可见文本前 200 字符) + 页面 readyState
+                    "  // 抓取更全面的诊断信息:页面文本、readyState、video/img/script 数量、MediaKeys 支持" +
                     "  var txt=(document.body&&document.body.innerText||'').replace(/\\s+/g,' ').trim();" +
-                    "  return 'NO_VIDEO|DUMP:'+txt.substring(0,200)+'|RS:'+document.readyState+'|TITLE:'+document.title;" +
+                    "  var info=[];" +
+                    "  info.push('URL='+location.href);" +
+                    "  info.push('TITLE='+document.title);" +
+                    "  info.push('RS='+document.readyState);" +
+                    "  info.push('videos='+document.getElementsByTagName('video').length);" +
+                    "  info.push('imgs='+document.getElementsByTagName('img').length);" +
+                    "  info.push('scripts='+document.getElementsByTagName('script').length);" +
+                    "  info.push('MediaKeys='+(window.MediaKeys?'YES':'NO'));" +
+                    "  info.push('MSE='+(window.MediaSource?'YES':'NO'));" +
+                    "  info.push('E10S='+(!!window.chrome?'YES':'NO'));" +
+                    "  info.push('UA='+navigator.userAgent.substring(0,60));" +
+                    "  var player=document.getElementById('player');" +
+                    "  if(player){info.push('playerHTML='+player.innerHTML.substring(0,200));}" +
+                    "  info.push('BODY='+txt.substring(0,300));" +
+                    "  return 'NO_VIDEO|'+info.join('\\n');" +
                     "})()";
             webView.evaluateJavascript(js, value -> {
                 if (gen != loadGeneration) return;
                 if (value == null) return;
                 String state = value.toString();
                 if (state.startsWith("NO_VIDEO")) {
-                    Log.e("CCTV-TV", "白屏详情: " + state);
-                    String detail = state.replace("NO_VIDEO|DUMP:", "")
-                            .replace("|RS:", " | 页面状态=")
-                            .replace("|TITLE:", " | 标题=");
-                    if (detail.length() > 120) detail = detail.substring(0, 120) + "...";
-                    Toast.makeText(MainActivity.this,
-                            "白屏  ·  " + detail, Toast.LENGTH_LONG).show();
+                    Log.e("CCTV-TV", "=== 白屏诊断 ===\n" + state);
+                    String detail = state.substring("NO_VIDEO|".length())
+                            .replace("\\n", "\n")
+                            .replace("|", "\n");
+                    // 直接打到屏幕中央的诊断面板,用户立刻能看到
+                    debugPanel.setText(detail);
+                    debugPanel.setVisibility(View.VISIBLE);
+                    // 同时也用 Toast,部分 TV 系统 Toast 比 TextView 更显眼
+                    String firstLine = detail.split("\n")[0];
+                    if (firstLine.length() > 60) firstLine = firstLine.substring(0, 60);
+                    Toast.makeText(MainActivity.this, "白屏:" + firstLine, Toast.LENGTH_LONG).show();
                 } else if (state.contains("PAUSED")) {
                     webView.evaluateJavascript(
                             "(function(){var v=document.querySelector('video');if(v){v.play();}return true;})()",
