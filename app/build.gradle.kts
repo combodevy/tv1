@@ -1,14 +1,13 @@
 plugins {
     id("com.android.application")
-    id("org.jetbrains.kotlin.android")
 }
 
 android {
-    namespace = "com.cctv.navigator"
+    namespace = "com.example.cctvofficialnavigator"
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "com.cctv.navigator"
+        applicationId = "com.example.cctvofficialnavigator"
         minSdk = 24
         targetSdk = 34
         versionCode = 1
@@ -29,15 +28,10 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-
-    kotlinOptions {
-        jvmTarget = "17"
-    }
 }
 
 dependencies {
-    implementation("androidx.core:core-ktx:1.13.1")
+    // 仅依赖 AndroidX 核心,WebView 为系统组件无需额外库
+    implementation("androidx.core:core:1.13.1")
     implementation("androidx.appcompat:appcompat:1.7.0")
-    implementation("com.google.android.material:material:1.12.0")
-    implementation("androidx.constraintlayout:constraintlayout:2.1.4")
 }
