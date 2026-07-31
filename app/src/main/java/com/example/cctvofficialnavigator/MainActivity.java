@@ -85,9 +85,11 @@ public final class MainActivity extends Activity {
         settings.setJavaScriptEnabled(true);
         settings.setDomStorageEnabled(true);
         settings.setDatabaseEnabled(true);
-        // 关闭自动加载图片:屏蔽非播放器相关图片,大幅减少 4G 流量与首屏时间
-        settings.setLoadsImagesAutomatically(false);
-        settings.setBlockNetworkImage(true);
+        // 关键:CCTV 某些频道(cctv3/6/8)的播放器依赖图片加载完成作为触发条件来插入 video 元素
+        // 如果 setLoadsImagesAutomatically(false) + setBlockNetworkImage(true),img 的 load 事件永远不触发,video 永远不插入 → 白屏
+        // 之前为减少首屏时间而屏蔽图片,但这会破坏 CCTV 自己的播放器逻辑,得不偿失
+        settings.setLoadsImagesAutomatically(true);
+        settings.setBlockNetworkImage(false);
         settings.setMediaPlaybackRequiresUserGesture(false);
         settings.setLoadWithOverviewMode(true);
         settings.setUseWideViewPort(true);
@@ -118,9 +120,9 @@ public final class MainActivity extends Activity {
      * 页面一开始加载就注入 FastLoading(每 200ms 跑一次):
      *  1. 注入强力 CSS,强制让播放器容器 #player 占满 100vw/100vh,隐藏所有非播放器装饰元素
      *     (顶部"体育频道直播"标题条、底部版权、右侧频道列表、节目预告区、广告等)
-     *  2. 清空所有 img 的 src(屏蔽非播放器相关图片)
-     *  3. 清空某些不必要 script 的 src
-     *  4. 不再依赖"网页全屏"按钮 click()(在某些频道上不可靠)
+     *  2. 清空某些不必要 script 的 src(login, jquery.qrcode, 分享, 收藏 等)
+     *  3. 不再依赖"网页全屏"按钮 click()(在某些频道上不可靠)
+     *  4. 不再清空图片 src(CCTV 某些频道的播放器依赖图片 onload 触发 video 元素插入)
      *  5. 持续运行,即使视频元素已出现,也要把页面装饰元素持续清空
      */
     private void injectFastLoading(WebView view) {
@@ -143,10 +145,6 @@ public final class MainActivity extends Activity {
                 "    s.textContent=css;" +
                 "    (document.head||document.documentElement).appendChild(s);" +
                 "  }" +
-                "  function stripImages(){" +
-                "    var imgs=document.getElementsByTagName('img');" +
-                "    for(var i=0;i<imgs.length;i++){try{imgs[i].src='';imgs[i].removeAttribute('src');}catch(e){}}" +
-                "  }" +
                 "  function stripScripts(){" +
                 "    var kw=['login','index','daohang','grey','jquery.qrcode','tinyscrollbar','shareindex','zhibo_shoucang','h5_shield','cntv_Advertise'];" +
                 "    var scripts=document.getElementsByTagName('script');" +
@@ -157,7 +155,6 @@ public final class MainActivity extends Activity {
                 "  }" +
                 "  function FastLoading(){" +
                 "    applyCss();" +
-                "    stripImages();" +
                 "    stripScripts();" +
                 "    if(window.__cctvFlStart===undefined)window.__cctvFlStart=Date.now();" +
                 "    if(Date.now()-window.__cctvFlStart<30000)setTimeout(FastLoading,200);" +
