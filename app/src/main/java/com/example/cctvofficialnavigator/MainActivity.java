@@ -243,60 +243,66 @@ public final class MainActivity extends Activity {
     }
 
     /**
-     * 15 秒后检查页面里到底有没有 video 元素。
-     * 没有 → 仅显示提示,让用户决定是"重试当前频道"还是"切下一个频道",
-     *       不再自动跳(CCTV-3/6/8 等版权敏感频道可能只是慢,不该擅自跳过)。
-     * 有但暂停 → 调 play() 强制播放。
+     * 5/10/15/20/30 秒各检查一次页面里到底有没有 video 元素。
+     * 没有 → 显示诊断面板(用户一定能看见,不再依赖 Toast)
+     * 有但暂停 → 调 play() 强制播放
+     * 多重保险:CCTV 页面有持续心跳,evaluateJavascript callback 偶尔会被吞,
+     *         30 秒后即使 callback 失败,屏幕也会显示"诊断中... 已等 N 秒"
      */
     private void scheduleWhiteScreenCheck() {
         final int gen = loadGeneration;
-        handler.postDelayed(() -> {
+        long[] delays = {5000L, 10000L, 15000L, 20000L, 30000L};
+        for (long delay : delays) {
+            handler.postDelayed(() -> doWhiteScreenCheck(gen, delay), delay);
+        }
+    }
+
+    private void doWhiteScreenCheck(int gen, long elapsedMs) {
+        if (gen != loadGeneration) return;
+        // 即使 evaluateJavascript 失败,也先在屏幕上打"诊断中"文字
+        debugPanel.setText("诊断中... 已等 " + (elapsedMs / 1000) + " 秒\nURL=" + (webView.getUrl() != null ? webView.getUrl() : "n/a"));
+        debugPanel.setVisibility(View.VISIBLE);
+        String js =
+                "(function(){" +
+                "  var v=document.querySelector('video');" +
+                "  if(v){return 'OK:'+(v.paused?'PAUSED':'PLAYING');}" +
+                "  var txt=(document.body&&document.body.innerText||'').replace(/\\s+/g,' ').trim();" +
+                "  var info=[];" +
+                "  info.push('URL='+location.href);" +
+                "  info.push('TITLE='+document.title);" +
+                "  info.push('RS='+document.readyState);" +
+                "  info.push('videos='+document.getElementsByTagName('video').length);" +
+                "  info.push('imgs='+document.getElementsByTagName('img').length);" +
+                "  info.push('scripts='+document.getElementsByTagName('script').length);" +
+                "  info.push('MediaKeys='+(window.MediaKeys?'YES':'NO'));" +
+                "  info.push('MSE='+(window.MediaSource?'YES':'NO'));" +
+                "  info.push('E10S='+(!!window.chrome?'YES':'NO'));" +
+                "  info.push('UA='+navigator.userAgent.substring(0,60));" +
+                "  var player=document.getElementById('player');" +
+                "  if(player){info.push('playerHTML='+player.innerHTML.substring(0,200));}" +
+                "  info.push('BODY='+txt.substring(0,300));" +
+                "  return 'NO_VIDEO|'+info.join('\\n');" +
+                "})()";
+        webView.evaluateJavascript(js, value -> {
             if (gen != loadGeneration) return;
-            String js =
-                    "(function(){" +
-                    "  var v=document.querySelector('video');" +
-                    "  if(v){return 'OK:'+(v.paused?'PAUSED':'PLAYING');}" +
-                    "  // 抓取更全面的诊断信息:页面文本、readyState、video/img/script 数量、MediaKeys 支持" +
-                    "  var txt=(document.body&&document.body.innerText||'').replace(/\\s+/g,' ').trim();" +
-                    "  var info=[];" +
-                    "  info.push('URL='+location.href);" +
-                    "  info.push('TITLE='+document.title);" +
-                    "  info.push('RS='+document.readyState);" +
-                    "  info.push('videos='+document.getElementsByTagName('video').length);" +
-                    "  info.push('imgs='+document.getElementsByTagName('img').length);" +
-                    "  info.push('scripts='+document.getElementsByTagName('script').length);" +
-                    "  info.push('MediaKeys='+(window.MediaKeys?'YES':'NO'));" +
-                    "  info.push('MSE='+(window.MediaSource?'YES':'NO'));" +
-                    "  info.push('E10S='+(!!window.chrome?'YES':'NO'));" +
-                    "  info.push('UA='+navigator.userAgent.substring(0,60));" +
-                    "  var player=document.getElementById('player');" +
-                    "  if(player){info.push('playerHTML='+player.innerHTML.substring(0,200));}" +
-                    "  info.push('BODY='+txt.substring(0,300));" +
-                    "  return 'NO_VIDEO|'+info.join('\\n');" +
-                    "})()";
-            webView.evaluateJavascript(js, value -> {
-                if (gen != loadGeneration) return;
-                if (value == null) return;
-                String state = value.toString();
-                if (state.startsWith("NO_VIDEO")) {
-                    Log.e("CCTV-TV", "=== 白屏诊断 ===\n" + state);
-                    String detail = state.substring("NO_VIDEO|".length())
-                            .replace("\\n", "\n")
-                            .replace("|", "\n");
-                    // 直接打到屏幕中央的诊断面板,用户立刻能看到
-                    debugPanel.setText(detail);
-                    debugPanel.setVisibility(View.VISIBLE);
-                    // 同时也用 Toast,部分 TV 系统 Toast 比 TextView 更显眼
-                    String firstLine = detail.split("\n")[0];
-                    if (firstLine.length() > 60) firstLine = firstLine.substring(0, 60);
-                    Toast.makeText(MainActivity.this, "白屏:" + firstLine, Toast.LENGTH_LONG).show();
-                } else if (state.contains("PAUSED")) {
-                    webView.evaluateJavascript(
-                            "(function(){var v=document.querySelector('video');if(v){v.play();}return true;})()",
-                            null);
-                }
-            });
-        }, WHITE_SCREEN_CHECK_DELAY_MS);
+            if (value == null) return;
+            String state = value.toString();
+            if (state.startsWith("NO_VIDEO")) {
+                Log.e("CCTV-TV", "=== 白屏诊断(" + elapsedMs + "ms) ===\n" + state);
+                String detail = state.substring("NO_VIDEO|".length())
+                        .replace("\\n", "\n")
+                        .replace("|", "\n");
+                debugPanel.setText(detail);
+                debugPanel.setVisibility(View.VISIBLE);
+                String firstLine = detail.split("\n")[0];
+                if (firstLine.length() > 60) firstLine = firstLine.substring(0, 60);
+                Toast.makeText(MainActivity.this, "白屏:" + firstLine, Toast.LENGTH_LONG).show();
+            } else if (state.contains("PAUSED")) {
+                webView.evaluateJavascript(
+                        "(function(){var v=document.querySelector('video');if(v){v.play();}return true;})()",
+                        null);
+            }
+        });
     }
 
     @Override
