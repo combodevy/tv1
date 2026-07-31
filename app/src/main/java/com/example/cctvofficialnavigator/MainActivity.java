@@ -8,6 +8,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.util.Log;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.KeyEvent;
@@ -94,7 +95,8 @@ public final class MainActivity extends Activity {
         settings.setLoadWithOverviewMode(true);
         settings.setUseWideViewPort(true);
 
-        webView.setWebChromeClient(new WebChromeClient());
+        // 用自定义的 WebChromeClient 拦截 console 输出(CCTV 内部的 JS 报错能反映到 logcat)
+        webView.setWebChromeClient(new LoggingWebChromeClient());
         webView.setWebViewClient(new WebViewClient() {
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
@@ -245,15 +247,22 @@ public final class MainActivity extends Activity {
                     "(function(){" +
                     "  var v=document.querySelector('video');" +
                     "  if(v){return 'OK:'+(v.paused?'PAUSED':'PLAYING');}" +
-                    "  return 'NO_VIDEO';" +
+                    // 诊断:返回 CCTV 在白屏上自己显示的文字(body 可见文本前 200 字符) + 页面 readyState
+                    "  var txt=(document.body&&document.body.innerText||'').replace(/\\s+/g,' ').trim();" +
+                    "  return 'NO_VIDEO|DUMP:'+txt.substring(0,200)+'|RS:'+document.readyState+'|TITLE:'+document.title;" +
                     "})()";
             webView.evaluateJavascript(js, value -> {
                 if (gen != loadGeneration) return;
                 if (value == null) return;
                 String state = value.toString();
-                if (state.contains("NO_VIDEO")) {
+                if (state.startsWith("NO_VIDEO")) {
+                    Log.e("CCTV-TV", "白屏详情: " + state);
+                    String detail = state.replace("NO_VIDEO|DUMP:", "")
+                            .replace("|RS:", " | 页面状态=")
+                            .replace("|TITLE:", " | 标题=");
+                    if (detail.length() > 120) detail = detail.substring(0, 120) + "...";
                     Toast.makeText(MainActivity.this,
-                            "此频道暂不可用  ·  菜单键重试  ·  上/下键切台", Toast.LENGTH_LONG).show();
+                            "白屏  ·  " + detail, Toast.LENGTH_LONG).show();
                 } else if (state.contains("PAUSED")) {
                     webView.evaluateJavascript(
                             "(function(){var v=document.querySelector('video');if(v){v.play();}return true;})()",
@@ -332,6 +341,26 @@ public final class MainActivity extends Activity {
                     || host.equals("cntv.cn") || host.endsWith(".cntv.cn");
         } catch (Exception ignored) {
             return false;
+        }
+    }
+
+    /**
+     * 把 WebView 内部的 console 输出(尤其是 error/warn)写到 logcat。
+     * 用法:在 MuMu 模拟器/真机上,运行 `adb logcat -s CCTV-TV` 即可看到 CCTV 内部 JS 的报错。
+     * 配合 scheduleWhiteScreenCheck 的 body dump,能定位到白屏的真实原因。
+     */
+    private static class LoggingWebChromeClient extends WebChromeClient {
+        @Override
+        public boolean onConsoleMessage(android.webkit.ConsoleMessage cm) {
+            String msg = cm.message();
+            int level = cm.messageLevel().ordinal();
+            // LOG_LEVEL_ERROR=2, LOG_LEVEL_WARNING=1, LOG_LEVEL_LOG=0
+            switch (level) {
+                case 2: Log.e("CCTV-TV", "[E] " + msg + "  @ " + cm.sourceId() + ":" + cm.lineNumber()); break;
+                case 1: Log.w("CCTV-TV", "[W] " + msg + "  @ " + cm.sourceId() + ":" + cm.lineNumber()); break;
+                default: Log.d("CCTV-TV", "[I] " + msg); break;
+            }
+            return true;
         }
     }
 }
