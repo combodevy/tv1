@@ -12,6 +12,10 @@ jobs:
 
     runs-on: ubuntu-latest
 
+    # 关闭 read-only 缓存,允许新构建覆盖旧缓存项
+    env:
+      GRADLE_OPTS: "-Dorg.gradle.daemon=false"
+
     steps:
       # 下载代码
       - name: Checkout
@@ -24,46 +28,82 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      # 安装 Android SDK(关键!gradle/actions/setup-gradle 不会自动装 SDK)
-      # 仅安装构建所需组件,减少 Runner 磁盘与下载耗时
+      # 防御性:删除 local.properties(避免 AGP 误用 Windows 本机 SDK 路径)
+      - name: Remove local.properties if present
+        run: |
+          for f in local.properties app/local.properties; do
+            if [ -f "$f" ]; then
+              echo "::warning::Removing $f (its sdk.dir is invalid for this runner)"
+              rm -f "$f"
+            fi
+          done
+
+      # 安装 Android SDK
       - name: Setup Android SDK
+        id: android-sdk
         uses: android-actions/setup-android@v3
         with:
-          # 显式固定 cmdline-tools / platform-tools / platform / build-tools
           cmdline-tools: latest
           platforms: android-34
           build-tools: 34.0.0
           cache-disabled: false
 
-      # 同意 SDK 许可(部分 runner 上需要)
+      # 同意 SDK 许可
       - name: Accept SDK licenses
         run: yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses > /dev/null
 
-      # 防御性:删除 local.properties(如果误提交,会指向 Windows 本机路径,导致 AGP 用了错误 SDK)
-      - name: Remove local.properties if present
+      # 调试:确认 SDK 已正确安装(没有这一行,后面 AGP 静默失败时不知道原因)
+      - name: Verify Android SDK
         run: |
-          if [ -f local.properties ]; then
-            echo "WARNING: removing local.properties (its sdk.dir points to a Windows path that does not exist on this runner)"
-            rm -f local.properties
-          fi
-          if [ -f app/local.properties ]; then
-            rm -f app/local.properties
-          fi
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+          echo "--- platforms ---"
+          ls -la $ANDROID_HOME/platforms/ 2>&1
+          echo "--- build-tools ---"
+          ls -la $ANDROID_HOME/build-tools/ 2>&1
+          echo "--- aapt2 version ---"
+          $ANDROID_HOME/build-tools/34.0.0/aapt2 version 2>&1 || echo "aapt2 NOT FOUND"
 
-      # 配置 Gradle(锁定 8.7,兼容 AGP 8.6.1)
+      # 彻底清理可能污染的构建/缓存
+      - name: Clean previous build outputs
+        run: |
+          rm -rf app/build
+          rm -rf .gradle
+          rm -rf ~/.gradle/caches/build-cache-1
+
+      # 配置 Gradle
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.7'
+          # 关键:让缓存可写,新构建能覆盖旧的损坏缓存
           cache-read-only: ${{ github.ref != 'refs/heads/master' }}
-
-      # 确保 gradlew 可执行
-      - name: Make gradlew executable
-        run: chmod +x gradlew
+          # 关闭 Gradle home 缓存,避免和构建缓存混淆
+          gradle-home-cache-cleanup: true
 
       # 编译 Debug APK
+      # --rerun-tasks: 强制重跑所有任务,不用任何缓存
+      # --no-build-cache: 关闭 build cache
+      # --no-daemon: CI 上不必要
+      # --stacktrace: 出错时看堆栈
       - name: Build APK
-        run: ./gradlew assembleDebug --no-daemon --stacktrace
+        run: ./gradlew assembleDebug --no-daemon --rerun-tasks --no-build-cache --stacktrace
+
+      # 调试:确认 APK 真的生成了
+      - name: Verify APK output
+        run: |
+          ls -la app/build/outputs/apk/debug/ 2>&1
+          echo "---"
+          APK=$(find app/build/outputs/apk/debug -name '*.apk' | head -1)
+          echo "APK file: $APK"
+          if [ -f "$APK" ]; then
+            echo "APK size: $(du -h $APK | cut -f1)"
+            echo "--- APK 内容列表 ---"
+            unzip -l "$APK" 2>&1 | head -30
+          else
+            echo "::error::APK was not produced!"
+            exit 1
+          fi
 
       # 上传 APK
       - name: Upload APK
