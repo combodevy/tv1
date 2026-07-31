@@ -39,6 +39,17 @@ jobs:
       - name: Accept SDK licenses
         run: yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses > /dev/null
 
+      # 防御性:删除 local.properties(如果误提交,会指向 Windows 本机路径,导致 AGP 用了错误 SDK)
+      - name: Remove local.properties if present
+        run: |
+          if [ -f local.properties ]; then
+            echo "WARNING: removing local.properties (its sdk.dir points to a Windows path that does not exist on this runner)"
+            rm -f local.properties
+          fi
+          if [ -f app/local.properties ]; then
+            rm -f app/local.properties
+          fi
+
       # 配置 Gradle(锁定 8.7,兼容 AGP 8.6.1)
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
