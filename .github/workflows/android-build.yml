@@ -81,6 +81,10 @@ jobs:
           # 关闭 Gradle home 缓存,避免和构建缓存混淆
           gradle-home-cache-cleanup: true
 
+      # 给 gradlew 加执行位(从 Windows 提交会丢失 +x)
+      - name: Make gradlew executable
+        run: chmod +x ./gradlew
+
       # 编译 Debug APK
       # --rerun-tasks: 强制重跑所有任务,不用任何缓存
       # --no-build-cache: 关闭 build cache
