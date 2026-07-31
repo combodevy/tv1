@@ -4,7 +4,7 @@ on:
   push:
     branches:
       - master
-
+  workflow_dispatch:
 
 jobs:
 
@@ -12,43 +12,38 @@ jobs:
 
     runs-on: ubuntu-latest
 
-
     steps:
+      # 下载代码
+      - name: Checkout
+        uses: actions/checkout@v4
 
-    # 下载你的代码
-    - name: Checkout
-      uses: actions/checkout@v4
+      # 安装 JDK 17
+      - name: Setup JDK
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: temurin
 
+      # 配置 Gradle(锁定 8.7,兼容 AGP 8.6.1)
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+          cache-read-only: ${{ github.ref != 'refs/heads/master' }}
 
-    # 安装 JDK
-    - name: Setup JDK
-      uses: actions/setup-java@v4
-      with:
-        java-version: '17'
-        distribution: temurin
+      # 确保 gradlew 可执行
+      - name: Make gradlew executable
+        run: chmod +x gradlew
 
+      # 编译 Debug APK
+      - name: Build APK
+        run: ./gradlew assembleDebug --no-daemon
 
-    # 配置 Gradle
-    - name: Setup Gradle
-      uses: gradle/actions/setup-gradle@v4
-
-
-    # 如果没有 wrapper，自动生成
-    - name: Generate Gradle Wrapper
-      run: |
-        gradle wrapper --gradle-version 8.6.1
-
-
-    # 编译 APK
-    - name: Build APK
-      run: |
-        chmod +x gradlew
-        ./gradlew assembleDebug
-
-
-    # 上传 APK
-    - name: Upload APK
-      uses: actions/upload-artifact@v4
-      with:
-        name: app-debug
-        path: app/build/outputs/apk/debug/*.apk
+      # 上传 APK
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-debug
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 30

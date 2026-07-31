@@ -1,3 +1,25 @@
-# Project exclude paths
-/.gradle/
-/app/
+# Gradle
+.gradle/
+build/
+
+# Android
+local.properties
+*.iml
+.idea/
+
+# App build outputs (only ignore build artifacts, not the module itself)
+/app/build/
+/app/.gradle/
+/captures/
+
+# Keystore & secrets
+*.jks
+*.keystore
+release.keystore
+
+# Logs
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
