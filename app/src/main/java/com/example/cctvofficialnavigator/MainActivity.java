@@ -213,6 +213,22 @@ public final class MainActivity extends Activity {
     }
 
     /**
+     * 判断 console error 是否为已知的、不影响播放的错误。
+     * 这些错误会被记录到 logcat,但不会覆盖 debug 面板上的白屏诊断信息。
+     */
+    private static boolean isKnownHarmlessError(String msg) {
+        if (msg == null) return true;
+        String m = msg.toLowerCase(Locale.ROOT);
+        // Aegis 前端监控 SDK 不支持当前域名/路径(腾讯监控库,与播放无关)
+        if (m.contains("aegis") && (m.contains("not support") || m.contains("not suport"))) return true;
+        // CCTV 自己的 trace 库抛出的非致命异常
+        if (m.contains("cctv5-trace") || m.contains("aegis")) return true;
+        // 百度统计/广告 SDK 域名错误
+        if (m.contains("bdns") || m.contains("bdydns")) return true;
+        return false;
+    }
+
+    /**
      * onPageStarted 最早期注入:hook document.write,把
      * document.write('<script src="跨站URL">...</script>') 转成
      * document.createElement('script') 异步插入。
@@ -642,10 +658,15 @@ public final class MainActivity extends Activity {
                 "  info.push('scripts='+document.getElementsByTagName('script').length);" +
                 "  info.push('MediaKeys='+(window.MediaKeys?'YES':'NO'));" +
                 "  info.push('MSE='+(window.MediaSource?'YES':'NO'));" +
-                "  info.push('UA='+navigator.userAgent.substring(0,60));" +
+                "  info.push('WASM='+(typeof WebAssembly==='object'?'YES:'+(typeof WebAssembly))+' Worker='+(typeof Worker==='function'?'YES':'NO')+' WebRTC='+(typeof RTCPeerConnection==='function'?'YES':'NO'));" +
+                "  info.push('HLSP2P='+(typeof HLSP2P)+' createLivePlayer='+(typeof createLivePlayer));" +
+                "  info.push('cntvPlayer='+(typeof cntvPlayer)+' playerObj='+(typeof playerObj));" +
                 "  var player=document.getElementById('player');" +
-                "  if(player){info.push('playerHTML='+player.innerHTML.substring(0,160));}" +
-                "  info.push('BODY='+txt.substring(0,200));" +
+                "  if(player){info.push('playerChildren='+player.children.length);info.push('playerHTML='+player.innerHTML.substring(0,200));}else{info.push('player=null');}" +
+                "  var h5p=document.getElementById('h5player');" +
+                "  if(h5p){info.push('h5playerHTML='+h5p.innerHTML.substring(0,200));}else{info.push('h5player=null');}" +
+                "  info.push('BODY='+txt.substring(0,120));" +
+                "  info.push('UA='+navigator.userAgent.substring(0,60));" +
                 "  return 'NO_VIDEO|'+info.join('\\n');" +
                 "})()";
         webView.evaluateJavascript(js, value -> {
@@ -869,7 +890,8 @@ public final class MainActivity extends Activity {
                 case 2:
                     Log.e("CCTV-TV", "[E] " + msg + "  @ " + cm.sourceId() + ":" + cm.lineNumber());
                     // 严重 JS 错误直接显示到面板(白屏时用户看得清)
-                    if (activity != null) {
+                    // 但过滤掉已知的非致命错误,避免覆盖白屏诊断信息
+                    if (activity != null && !isKnownHarmlessError(msg)) {
                         String shortMsg = msg.length() > 260 ? msg.substring(0, 260) : msg;
                         activity.updateDebugPanel("CONSOLE_ERR", shortMsg);
                     }
