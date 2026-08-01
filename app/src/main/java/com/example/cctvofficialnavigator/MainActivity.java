@@ -445,10 +445,15 @@ public final class MainActivity extends Activity {
                 // 装饰元素: 隐藏 (桌面版的顶部 CCTV 大导航栏也必须隐藏)
                 // + AliPlayer 控制栏/水印/封面/大播放按钮 (.prism-controlbar .prism-big-play-btn .prism-cover .prism-watermark .prism-live-tip)
                 // + 广西台页面常见装饰 (.header .nav .footer .channel-list .channel-detail .program-list .live-info .share-bar .page-header .page-footer .breadcrumb)
+                // + 央视频 yangshipin 页面常见装饰: 顶部(登录/下载App)/关注按钮/相关推荐/底部版权/节目单侧边栏/"打开APP"弹窗
                 "    '.video_right,.video_btnBar,.bg_top_h_tile,.bg_top_owner,.bg_bottom_h_tile,header,footer,nav,.vspace,.column_wrapper,.nav,.topbar,.sitemap,.shares,'+" +
                 "    '.prism-controlbar,.prism-big-play-btn,.prism-cover,.prism-watermark,.prism-live-tip,.prism-info-panel,.prism-fullscreen-btn,'+" +
                 "    '.header,.channel-list,.channel-detail,.program-list,.live-info,.share-bar,.page-header,.page-footer,.breadcrumb,'+" +
-                "    '.m-navbar,.m-footer,.m-live-detail,.m-program-guide,.m-live-side,.gxtv-header,.gxtv-footer,.m-side-share{display:none!important}';" +
+                "    '.m-navbar,.m-footer,.m-live-detail,.m-program-guide,.m-live-side,.gxtv-header,.gxtv-footer,.m-side-share,'+" +
+                "    '.ysp-header,.ysp-footer,.ysp-login,.ysp-download,.ysp-related,.ysp-program,.ysp-side-nav,.ysp-detail,.ysp-epg,.ysp-recommend,'+" +
+                "    '.app-download-btn,.follow-btn,.attention-btn,.login-bar,.share-box,.program-list,.recommend-list,.comment-box,.bottom-copyright,'+" +
+                "    '.txp_layer_bottom,.txp_top_title,.txp_vip_tip,.txp_mini_tip,.txp_btn,.txp_right_menu,'+" +
+                "    '#YSP_HEADER,#YSP_FOOTER,#ysp_download,#ysp_login,#ysp_attention,#ysp_share,#ysp_program,#ysp_related,#ysp_recommend{display:none!important}';" +
                 "  function applyCss(){" +
                 "    if(document.getElementById('cctv-tv-style'))return;" +
                 "    var s=document.createElement('style');" +
@@ -546,6 +551,9 @@ public final class MainActivity extends Activity {
                 // 隐藏 AliPlayer 控制栏/水印/大播放按钮等非视频元素(不影响 video 元素本身的显示)
                 "    var prismDecor=document.querySelectorAll('.prism-controlbar,.prism-big-play-btn,.prism-cover,.prism-watermark,.prism-live-tip,.prism-info-panel,.prism-fullscreen-btn');" +
                 "    for(var i=0;i<prismDecor.length;i++){prismDecor[i].style.display='none';}" +
+                // 隐藏央视频 yangshipin 装饰:登录/下载/关注/推荐/节目/版权 + 腾讯 txplayer 控件层
+                "    var yspDecor=document.querySelectorAll('.ysp-header,.ysp-footer,.ysp-login,.ysp-download,.ysp-related,.ysp-program,.ysp-side-nav,.ysp-detail,.ysp-epg,.ysp-recommend,.app-download-btn,.follow-btn,.attention-btn,.login-bar,.share-box,.program-list,.recommend-list,.comment-box,.bottom-copyright,.txp_layer_bottom,.txp_top_title,.txp_vip_tip,.txp_mini_tip,.txp_btn,.txp_right_menu,#YSP_HEADER,#YSP_FOOTER,#ysp_download,#ysp_login,#ysp_attention,#ysp_share,#ysp_program,#ysp_related,#ysp_recommend');" +
+                "    for(var i=0;i<yspDecor.length;i++){yspDecor[i].style.display='none';}" +
                 // 隐藏所有 iframe(广告等),确保不盖住 video
                 "    var ifs=document.querySelectorAll('iframe');" +
                 "    for(var i=0;i<ifs.length;i++){ifs[i].style.display='none';}" +
@@ -1147,6 +1155,11 @@ public final class MainActivity extends Activity {
             // 广西台使用阿里云 AliPlayer 播放器(官方 CDN 资源,非第三方广告)
             if (host.equals("alicdn.com") || host.endsWith(".alicdn.com")) return true;
             if (host.equals("aliyun.com") || host.endsWith(".aliyun.com")) return true;
+            // 央视频 yangshipin.cn(独立CCTV-6/3/8等频道的移动版/PC版直播页,官方出品)
+            if (host.equals("yangshipin.cn") || host.endsWith(".yangshipin.cn")) return true;
+            // 央视频流 CDN(流域名,从 txvlive.js 解析出的 m3u8/ts 服务器)
+            if (host.equals("ysp.cctv.cn") || host.endsWith(".ysp.cctv.cn")) return true;
+            if (host.equals("smtcdns.net") || host.endsWith(".smtcdns.net")) return true;
             return false;
         } catch (Exception ignored) {
             return false;
