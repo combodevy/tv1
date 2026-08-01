@@ -970,17 +970,27 @@ public final class MainActivity extends Activity {
 
     /**
      * 按频道号正序排序(CCTV-1, CCTV-2, ..., CCTV-17),同号保持原序。
+     * 对于 extractChannelNumber 返回 999 的非 CCTV 台(如广西新闻频道、广西卫视),
+     * 直接按 ChannelCatalog.CHANNELS 的写入顺序顺延,不参与排序(排在末尾)。
      */
     private void buildSortedChannelList() {
         sortedChannelIndices = new ArrayList<>();
+        // 1) CCTV 台:先按 extractChannelNumber 正序排列,同号保持写入原序(稳定排序)
+        List<Integer> cctvIndices = new ArrayList<>();
+        // 2) 非 CCTV 台(号=999):按写入顺序放在后面,不再"按频道号"排序(否则会出现在错误位置)
+        List<Integer> otherIndices = new ArrayList<>();
         for (int i = 0; i < ChannelCatalog.CHANNELS.size(); i++) {
-            sortedChannelIndices.add(i);
+            int n = extractChannelNumber(ChannelCatalog.CHANNELS.get(i).name);
+            if (n == 999) otherIndices.add(i);
+            else cctvIndices.add(i);
         }
-        Collections.sort(sortedChannelIndices, (a, b) -> {
+        Collections.sort(cctvIndices, (a, b) -> {
             int numA = extractChannelNumber(ChannelCatalog.CHANNELS.get(a).name);
             int numB = extractChannelNumber(ChannelCatalog.CHANNELS.get(b).name);
             return Integer.compare(numA, numB);
         });
+        sortedChannelIndices.addAll(cctvIndices);
+        sortedChannelIndices.addAll(otherIndices);
     }
 
     /**
@@ -993,9 +1003,10 @@ public final class MainActivity extends Activity {
         for (int i = 0; i < sortedChannelIndices.size(); i++) {
             int origIdx = sortedChannelIndices.get(i);
             Channel ch = ChannelCatalog.CHANNELS.get(origIdx);
-            int chNum = extractChannelNumber(ch.name);
+            // 序号:按列表顺序 1..N 顺延(非 CCTV 台不再显示 999)
+            int displayNum = i + 1;
             TextView tv = new TextView(this);
-            tv.setText(chNum + ". " + ch.name);
+            tv.setText(displayNum + ". " + ch.name);
             tv.setTextSize(16);
             tv.setPadding(24, 16, 16, 16);
             tv.setTextColor(Color.WHITE);
@@ -1076,10 +1087,14 @@ public final class MainActivity extends Activity {
     }
 
     /**
-     * 按频道号跳转:找到第一个匹配的频道并加载。
+     * 按频道号跳转:
+     *  1) 优先按 extractChannelNumber 匹配(CCTV-1..CCTV-17 等 CCTV 台的频道号)
+     *  2) 若无匹配,则按"列表第 N 项(1 开始)"匹配(广西新闻频道=列表第 18 项,广西卫视=第 19 项,后续扩展同理)
+     *     这样非 CCTV 台不用改 extractChannelNumber 就能按顺延序号直接跳。
      */
     private void jumpToChannelNumber(int num) {
         if (sortedChannelIndices == null) buildSortedChannelList();
+        // 1) CCTV 频道号匹配
         for (int i = 0; i < sortedChannelIndices.size(); i++) {
             int origIdx = sortedChannelIndices.get(i);
             Channel ch = ChannelCatalog.CHANNELS.get(origIdx);
@@ -1087,6 +1102,12 @@ public final class MainActivity extends Activity {
                 loadChannel(origIdx);
                 return;
             }
+        }
+        // 2) 列表第 N 项匹配(1-based)
+        if (num >= 1 && num <= sortedChannelIndices.size()) {
+            int origIdx = sortedChannelIndices.get(num - 1);
+            loadChannel(origIdx);
+            return;
         }
         updateDebugPanel("未找到", "频道 " + num);
     }

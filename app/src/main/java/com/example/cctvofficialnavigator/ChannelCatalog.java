@@ -23,7 +23,8 @@ final class ChannelCatalog {
             new Channel("CCTV-15 音乐",             "https://tv.cctv.com/live/cctv15/"),
             new Channel("CCTV-16 奥林匹克",          "https://tv.cctv.com/live/cctv16/"),
             new Channel("CCTV-17 农业农村",          "https://tv.cctv.com/live/cctv17/"),
-            new Channel("广西新闻频道",               "https://tv.gxtv.cn/channel/channelivePlay_9dfd8600075811e9ba67e41f13b60c62.html")
+            new Channel("广西新闻频道",               "https://tv.gxtv.cn/channel/channelivePlay_9dfd8600075811e9ba67e41f13b60c62.html"),
+            new Channel("广西卫视",                   "https://tv.gxtv.cn/channel/channelivePlay_e7a7ab7df9fe11e88bcfe41f13b60c62.html")
     );
 
     private ChannelCatalog() { }
