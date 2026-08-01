@@ -1168,31 +1168,26 @@ public final class MainActivity extends Activity {
     }
 
     /**
-     * 用 GeckoView 加载 CCTV-3/6/8 频道。
+     * 用 WebView + 桌面 UA 加载 CCTV-3/6/8 频道。
+     *
+     * 为什么不用 GeckoView 了?(2026-08-01 最后一次定位)
+     *  GeckoView 130 没有 evaluateJavascript/executeScript API,只能用 loadUri("javascript:...") 注入脚本。
+     *  但 CCTV 官方页面启用了严格 CSP(Content-Security-Policy),阻止 inline script 和 javascript: URL。
+     *  结果就是:页面能正常渲染,但所有注入的 JS(CSS/自动播放/全屏跳转)全部被 CSP 静默丢弃,完全不生效。
+     *  WebView 虽然没有 Widevine DRM + 完整解码器,但:
+     *   1. WebView 的 evaluateJavascript 不受页面 CSP 限制,注入 JS 100% 生效
+     *   2. 有 window.chrome 伪装 + hls.js 兜底播放 + CSS 全屏等一整套经过验证的 hack
+     *   3. MuMu(x86) 模拟器无硬件 H.264 解码器导致"有声音无画面",但真实 ARM 电视盒子有,正常
+     *  真实目标是 ARM 电视盒子,所以回到 WebView 是最可靠方案。
+     *  GeckoView 保留在布局中(GONE,隐藏),等将来升级到有 evaluateJavascript 的 GeckoView 版本再启用。
      */
     private void loadGeckoChannel(String url) {
-        if (!geckoReady) {
-            Log.w("CCTV-TV", "GeckoView 未就绪,重新初始化");
-            initGeckoView();
-        }
-        if (geckoReady && geckoSession != null) {
-            // 显示 GeckoView,隐藏 WebView
-            webView.setVisibility(View.GONE);
-            geckoView.setVisibility(View.VISIBLE);
-            geckoView.requestFocus();
-            Log.i("CCTV-TV", "GeckoView 加载: " + url);
-            geckoSession.loadUri(url);
-            // 直接注入一次早期引导(防止onPageStart注入时DOM环境还没就绪)
-            injectGeckoEarlyBootstrap();
-        } else {
-            // GeckoView 不可用,回退到 WebView(带桌面 UA)
-            Log.w("CCTV-TV", "GeckoView 不可用,回退到 WebView");
-            WebSettings settings = webView.getSettings();
-            settings.setUserAgentString(DESKTOP_UA);
-            webView.setVisibility(View.VISIBLE);
-            webView.loadUrl(url);
-            scheduleWhiteScreenCheck();
-        }
+        switchToWebView();
+        WebSettings settings = webView.getSettings();
+        settings.setUserAgentString(DESKTOP_UA);
+        Log.i("CCTV-TV", "WebView 桌面 UA 加载: " + url);
+        webView.loadUrl(url);
+        scheduleWhiteScreenCheck();
     }
 
     /**
