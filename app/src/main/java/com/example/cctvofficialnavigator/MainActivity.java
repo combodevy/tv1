@@ -2,10 +2,8 @@ package com.example.cctvofficialnavigator;
 
 import android.annotation.SuppressLint;
 import android.app.Activity;
-import android.content.ActivityNotFoundException;
 import android.graphics.Bitmap;
 import android.graphics.Color;
-import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
@@ -31,7 +29,11 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import androidx.browser.customtabs.CustomTabsIntent;
+import org.mozilla.geckoview.GeckoRuntime;
+import org.mozilla.geckoview.GeckoRuntimeSettings;
+import org.mozilla.geckoview.GeckoSession;
+import org.mozilla.geckoview.GeckoSessionSettings;
+import org.mozilla.geckoview.GeckoView;
 
 import java.net.URI;
 import java.util.ArrayList;
@@ -88,8 +90,11 @@ public final class MainActivity extends Activity {
     // 数字输入:按数字键直接跳频道,3秒延迟支持多位数
     private final StringBuilder pendingNumber = new StringBuilder();
     private Runnable numberInputTimeoutRunnable;
-    // CCTV-3/6/8 用 Chrome Custom Tab(完整 Chrome 引擎,含 Widevine DRM + window.chrome)
-    private boolean returningFromChrome = false;
+    // CCTV-3/6/8 用 GeckoView(Firefox 引擎,内嵌完整浏览器引擎)
+    private GeckoView geckoView;
+    private GeckoRuntime geckoRuntime;
+    private GeckoSession geckoSession;
+    private boolean geckoReady = false;
     // 倒计时线程:用 background thread 跑,避免被 WebView 加载/JS 阻塞 main thread 导致 postDelayed 永不执行
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
     // 拦截到的 m3u8 URL(从 shouldInterceptRequest 捕获,用于 hls.js 兜底播放)
@@ -170,6 +175,7 @@ public final class MainActivity extends Activity {
             }
         });
         configureWebView();
+        initGeckoView(); // 初始化 GeckoView(用于 CCTV-3/6/8)
         enterImmersiveMode();
         loadChannel(channelIndex);
     }
@@ -836,59 +842,129 @@ public final class MainActivity extends Activity {
     }
 
     /**
-     * 用 Chrome Custom Tab 打开 CCTV-3/6/8(完整 Chrome 引擎,非 WebView)。
-     * Chrome 有完整的 window.chrome、Widevine DRM、MediaSource 支持,
-     * 解决 WebView "有声音无画面"问题(DRM 视频流无法在 WebView 中解码)。
-     * 桌面 UA 通过 HTTP 头传入,避免服务器端重定向到空页。
-     * Chrome 原生支持 HTML5 全屏(CCTV 播放器的全屏按钮可直接使用)。
+     * 初始化 GeckoView(Firefox 引擎),用于 CCTV-3/6/8。
+     * GeckoView 自带:
+     *  - Widevine DRM(解密加密视频流)
+     *  - 完整 MediaSource(支持 MSE blob URL)
+     *  - 完整视频解码器(不依赖系统 WebView)
+     *  - UA 自定义(桌面 UA)
+     *  - HTML5 全屏(CCTV 播放器的全屏按钮直接可用)
+     *  - 自动播放(不需要 muted hack)
      */
-    private void launchChromeTab(String url) {
-        Log.i("CCTV-TV", "启动 Chrome Custom Tab: " + url);
-        CustomTabsIntent.Builder builder = new CustomTabsIntent.Builder();
-        builder.setUrlBarHidingEnabled(true); // 滚动时隐藏地址栏
-        builder.setShowTitle(false);
-        builder.setToolbarColor(Color.BLACK);
-
-        CustomTabsIntent customTabsIntent = builder.build();
-
-        // 桌面 UA + Referer 作为 HTTP 头传入(避免服务器端重定向到 empty.html)
-        Bundle headers = new Bundle();
-        headers.putString("User-Agent", DESKTOP_UA);
-        headers.putString("Referer", "https://tv.cctv.com/");
-        customTabsIntent.intent.putExtra(android.provider.Browser.EXTRA_HEADERS, headers);
-
-        returningFromChrome = true;
-
-        // 优先用 Chrome(完整引擎,含 Widevine)
-        customTabsIntent.intent.setPackage("com.android.chrome");
+    @SuppressLint("SetJavaScriptEnabled")
+    private void initGeckoView() {
+        geckoView = findViewById(R.id.gecko_view);
         try {
-            customTabsIntent.launchUrl(this, Uri.parse(url));
-            return;
-        } catch (ActivityNotFoundException e) {
-            Log.w("CCTV-TV", "Chrome 未安装,尝试其他浏览器");
+            // 创建 GeckoRuntime,配置 JS + DRM(GeckoView 130 的 UA 覆盖和自动播放通过 SessionSettings 设置)
+            GeckoRuntimeSettings.Builder builder = new GeckoRuntimeSettings.Builder()
+                    .javaScriptEnabled(true)
+                    .configFilePath(getFilesDir().getAbsolutePath() + "/geckoview-config.json");
+            geckoRuntime = GeckoRuntime.create(this, builder.build());
+            if (geckoRuntime == null) {
+                Log.e("CCTV-TV", "GeckoRuntime 创建失败,回退到 WebView");
+                geckoReady = false;
+                return;
+            }
+            // 创建 GeckoSession
+            geckoSession = new GeckoSession();
+            geckoSession.getSettings().setUserAgentMode(GeckoSessionSettings.USER_AGENT_MODE_DESKTOP);
+            geckoSession.getSettings().setViewportMode(GeckoSessionSettings.VIEWPORT_MODE_DESKTOP);
+            geckoSession.getSettings().setUserAgentOverride(DESKTOP_UA);
+            geckoSession.getSettings().setAllowJavascript(true);
+
+            // Content delegate: 处理全屏 + 页面标题
+            geckoSession.setContentDelegate(new GeckoSession.ContentDelegate() {
+                @Override
+                public void onFullScreen(GeckoSession session, boolean fullScreen) {
+                    Log.i("CCTV-TV", "GeckoView 全屏: " + fullScreen);
+                    if (fullScreen) {
+                        enterImmersiveMode();
+                    }
+                }
+
+                @Override
+                public void onTitleChange(GeckoSession session, String title) {
+                }
+
+                @Override
+                public void onCloseRequest(GeckoSession session) {
+                }
+            });
+
+            // Progress delegate: 页面加载进度
+            geckoSession.setProgressDelegate(new GeckoSession.ProgressDelegate() {
+                @Override
+                public void onPageStart(GeckoSession session, String url) {
+                    updateDebugPanel("GeckoView加载", shortenUrl(url));
+                }
+
+                @Override
+                public void onPageStop(GeckoSession session, boolean success) {
+                    updateDebugPanel("GeckoView就绪", success ? "加载完成" : "加载失败");
+                }
+            });
+
+            // Navigation delegate: 拦截非 CCTV URL
+            geckoSession.setNavigationDelegate(new GeckoSession.NavigationDelegate() {
+                @Override
+                public void onLocationChange(GeckoSession session, String url,
+                        java.util.List<org.mozilla.geckoview.GeckoSession.PermissionDelegate.ContentPermission> perms,
+                        Boolean hasChanged) {
+                    if (url != null && url.contains("yangshipin.cn/static/empty")) {
+                        Log.w("CCTV-TV", "GeckoView 被重定向到空页,重新加载");
+                        Channel cur = ChannelCatalog.CHANNELS.get(channelIndex);
+                        geckoSession.loadUri(cur.officialUrl);
+                    }
+                }
+            });
+
+            geckoSession.open(geckoRuntime);
+            geckoView.setSession(geckoSession);
+            geckoReady = true;
+            Log.i("CCTV-TV", "GeckoView 初始化成功");
+        } catch (Exception e) {
+            Log.e("CCTV-TV", "GeckoView 初始化失败: " + e.getMessage(), e);
+            geckoReady = false;
         }
+    }
 
-        // 回退到系统默认浏览器
-        customTabsIntent.intent.setPackage(null);
-        try {
-            customTabsIntent.launchUrl(this, Uri.parse(url));
-        } catch (Exception e2) {
-            Log.e("CCTV-TV", "无浏览器可用,回退到 WebView");
-            returningFromChrome = false;
-            // 回退到 WebView(带桌面 UA + 所有注入)
+    /**
+     * 用 GeckoView 加载 CCTV-3/6/8 频道。
+     */
+    private void loadGeckoChannel(String url) {
+        if (!geckoReady) {
+            Log.w("CCTV-TV", "GeckoView 未就绪,重新初始化");
+            initGeckoView();
+        }
+        if (geckoReady && geckoSession != null) {
+            // 显示 GeckoView,隐藏 WebView
+            webView.setVisibility(View.GONE);
+            geckoView.setVisibility(View.VISIBLE);
+            geckoView.requestFocus();
+            Log.i("CCTV-TV", "GeckoView 加载: " + url);
+            geckoSession.loadUri(url);
+        } else {
+            // GeckoView 不可用,回退到 WebView(带桌面 UA)
+            Log.w("CCTV-TV", "GeckoView 不可用,回退到 WebView");
+            WebSettings settings = webView.getSettings();
+            settings.setUserAgentString(DESKTOP_UA);
+            webView.setVisibility(View.VISIBLE);
             webView.loadUrl(url);
             scheduleWhiteScreenCheck();
         }
     }
 
-    @Override
-    protected void onResume() {
-        super.onResume();
-        if (returningFromChrome) {
-            // 从 Chrome 返回,显示频道提示
-            returningFromChrome = false;
-            Channel ch = ChannelCatalog.CHANNELS.get(channelIndex);
-            showChannelHint(ch.name + "  ·  按上下键切台  ·  按OK打开频道列表");
+    /**
+     * 切换到 WebView 模式(非 CCTV-3/6/8 频道)。
+     */
+    private void switchToWebView() {
+        if (geckoView != null) {
+            geckoView.setVisibility(View.GONE);
+        }
+        webView.setVisibility(View.VISIBLE);
+        // 停止 GeckoView 加载(节省资源)
+        if (geckoSession != null) {
+            geckoSession.stop();
         }
     }
 
@@ -921,15 +997,17 @@ public final class MainActivity extends Activity {
         // 所以 MuMu 上 CCTV-3/6/8 会有声音没画面。真实 ARM 电视盒子有硬件解码器,不受影响。
         WebSettings settings = webView.getSettings();
         if (needsDesktopUA(channel.officialUrl)) {
-            // CCTV-3/6/8:用 Chrome Custom Tab(完整 Chrome 引擎)
-            // Chrome 有完整的 window.chrome、Widevine DRM、MediaSource 支持
-            // 桌面 UA 作为 HTTP 头传入,避免服务器端重定向到空页
+            // CCTV-3/6/8:用 GeckoView(Firefox 引擎,内嵌完整浏览器)
+            // GeckoView 自带 Widevine DRM + MediaSource + 完整视频解码器
+            // 不需要安装 Chrome,直接内嵌在 APK 里
             settings.setUserAgentString(DESKTOP_UA);
-            updateDebugPanel("Chrome引擎", channel.name + " [桌面UA]");
-            showChannelHint(channel.name + "  ·  按返回键回到频道列表");
-            launchChromeTab(channel.officialUrl);
+            updateDebugPanel("GeckoView", channel.name + " [桌面UA]");
+            showChannelHint(channel.name);
+            loadGeckoChannel(channel.officialUrl);
             return;
         } else {
+            // 其他频道:用 WebView(移动 UA),先切回 WebView 模式
+            switchToWebView();
             settings.setUserAgentString(null); // null = 回退到系统默认移动 UA
         }
         // 切换频道时先显示"加载中"进度提示
@@ -1206,6 +1284,13 @@ public final class MainActivity extends Activity {
     protected void onDestroy() {
         handler.removeCallbacksAndMessages(null);
         channelHint.removeCallbacks(hideChannelHint);
+        // 清理 GeckoView
+        if (geckoSession != null) {
+            try {
+                geckoSession.close();
+            } catch (Exception ignored) {
+            }
+        }
         webView.destroy();
         super.onDestroy();
     }

@@ -18,6 +18,8 @@ dependencyResolutionManagement {
         // 官方源优先
         google()
         mavenCentral()
+        // Mozilla Maven(GeckoView 引擎)
+        maven { url = uri("https://maven.mozilla.org/maven2/") }
         // 阿里云镜像作为备份
         maven { url = uri("https://maven.aliyun.com/repository/google") }
         maven { url = uri("https://maven.aliyun.com/repository/public") }
