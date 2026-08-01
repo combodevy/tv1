@@ -391,7 +391,7 @@ public final class MainActivity extends Activity {
                 // #h5player_player 是 CCTV 播放器创建的 video 元素 ID
                 "    '#h5player_player{position:fixed!important;display:block!important;visibility:visible!important;opacity:1!important;width:100vw!important;height:100vh!important;min-width:100vw!important;min-height:100vh!important;left:0!important;top:0!important;z-index:999999!important;object-fit:contain!important;background:#000!important;transform:translateZ(0)!important;backface-visibility:hidden!important}'+" +
                 // 播放器容器: 确保尺寸不为 0,overflow 不裁剪 video
-                "    '#player,#player_container,.video_box,.video_flash,.video_left{overflow:visible!important;width:100vw!important;height:100vh!important}'+",
+                "    '#player,#player_container,.video_box,.video_flash,.video_left{overflow:visible!important;width:100vw!important;height:100vh!important}'+" +
                 // 装饰元素: 隐藏 (桌面版的顶部 CCTV 大导航栏也必须隐藏)
                 "    '.video_right,.video_btnBar,.bg_top_h_tile,.bg_top_owner,.bg_bottom_h_tile,header,footer,nav,.vspace,.column_wrapper,.nav,.topbar,.sitemap,.shares{display:none!important}';" +
                 "  function applyCss(){" +
