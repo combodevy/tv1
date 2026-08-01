@@ -896,15 +896,14 @@ public final class MainActivity extends Activity {
                 @Override
                 public void onPageStart(GeckoSession session, String url) {
                     updateDebugPanel("GeckoView加载", shortenUrl(url));
-                    // 早期注入 CSS + 自动播放轮询(DOM 可能还没就绪,脚本内部用 DOMContentLoaded 兜底)
-                    injectGeckoAutoPlay();
                 }
 
                 @Override
                 public void onPageStop(GeckoSession session, boolean success) {
                     updateDebugPanel("GeckoView就绪", success ? "加载完成" : "加载失败");
-                    // 页面加载完再注入一次(防止 onPageStart 注入时 DOM 未就绪被丢弃)
-                    injectGeckoAutoPlay();
+                    // 页面加载完后用 Java Handler 多次延迟注入(CCTV 的 video 元素是动态插入的,
+                    // 用 Java 层轮询比 JS setTimeout 更可靠,不受页面 JS 阻塞影响)
+                    scheduleGeckoAutoPlay();
                 }
             });
 
@@ -933,56 +932,74 @@ public final class MainActivity extends Activity {
     }
 
     /**
-     * 给 GeckoView 注入自动播放脚本(仅 CCTV-3/6/8)。
+     * 用 Java Handler 多次延迟注入自动播放+全屏脚本(仅 GeckoView/CCTV-3/6/8)。
+     * CCTV 的 video 元素是流连接后才动态插入的,需要多次尝试。
+     * 用 Java 层轮询比 JS setTimeout 更可靠(不受页面 JS 心跳阻塞)。
+     */
+    private void scheduleGeckoAutoPlay() {
+        final int gen = loadGeneration;
+        long[] delays = {1500L, 3000L, 5000L, 7000L, 10000L, 15000L, 20000L};
+        for (long delay : delays) {
+            handler.postDelayed(() -> {
+                if (gen != loadGeneration || !geckoReady || geckoSession == null) return;
+                injectGeckoAutoPlay();
+            }, delay);
+        }
+    }
+
+    /**
+     * 给 GeckoView 注入自动播放+全屏脚本(仅 CCTV-3/6/8)。
      *
-     * 核心思路(和 WebView 时代的 hack 完全不同):
-     *  GeckoView 控件本身已经是 match_parent 全屏 + enterImmersiveMode() 隐藏了系统 UI,
-     *  所以视觉上已经全屏了。不需要 CSS 暴力拉 video、不需要 requestFullscreen()。
-     *  之前注入 CSS(position:fixed/100vw/100vh)和 requestFullscreen() 会干扰 GeckoView
-     *  内部的渲染管线,导致黑屏。
-     *
-     *  GeckoView 是完整的 Firefox 引擎,自带 DRM + MediaSource + 视频解码器,
-     *  能自己正确渲染 CCTV 页面的播放器。我们只做一件事:让 video 自动播放。
-     *  CCTV 桌面版的 video 元素是动态插入的(流连接后才有),需要轮询。
+     * 三件事(每次调用都执行,用 JS 内部标志防重复):
+     *  1. 温和 CSS: 隐藏装饰元素(导航栏/频道列表/广告),播放器容器占满。
+     *     关键: 不碰 video 的 position/transform(之前碰了导致 GeckoView 黑屏)
+     *  2. 自动播放: video.muted=true + play(),2秒后取消 muted 恢复声音
+     *  3. 点击 CCTV 全屏按钮: #player_pagefullscreen_yes_player / .videoFull
+     *     这是 CCTV 播放器自己的 CSS 网页全屏(非 HTML5 Fullscreen API),不会黑屏
      */
     private void injectGeckoAutoPlay() {
         if (geckoSession == null) return;
         String js =
                 "(function(){" +
-                "  if(window.__cctvGeckoAutoPlay)return;" +
-                "  window.__cctvGeckoAutoPlay=true;" +
-                // 轮询: 找到 video 就自动播放(200ms x 300 = 60秒)
-                // 不动 CSS,不调 requestFullscreen,信任 GeckoView 自己的渲染
-                "  var count=0;" +
-                "  function tick(){" +
-                "    var v=document.getElementById('h5player_player')||document.querySelector('video');" +
-                "    if(v){" +
-                // 自动播放: muted=true 先播,2秒后取消 muted 恢复声音(绕过自动播放策略)
-                "      try{" +
-                "      if(v.paused&&!v.__gvAutoplay){" +
-                "        v.__gvAutoplay=true;" +
-                "        v.muted=true;" +
-                "        var p=v.play();" +
-                "        if(p&&p.then){" +
-                "          p.then(function(){setTimeout(function(){v.muted=false;},2000);}).catch(function(e){v.__gvAutoplay=false;});" +
-                "        } else {" +
-                "          setTimeout(function(){v.muted=false;},2000);" +
-                "        }" +
+                // 1. 温和 CSS: 只隐藏装饰 + 放大容器,绝不碰 video 的 position
+                "  if(!document.getElementById('cctv-gv-style')){" +
+                "    var s=document.createElement('style');" +
+                "    s.id='cctv-gv-style';" +
+                "    s.textContent=" +
+                "      '.video_right,.video_btnBar,.bg_top_h_tile,.bg_bottom_h_tile,header,footer,nav,.vspace,.column_wrapper,.topbar,.sitemap,.shares{display:none!important}'+" +
+                "      'iframe{display:none!important}'+" +
+                "      '#player,#player_container,.video_box,.video_flash,.video_left{width:100%!important;height:100%!important}'+" +
+                "      'html,body{margin:0!important;padding:0!important;background:#000!important;overflow:hidden!important}';" +
+                "    (document.head||document.documentElement).appendChild(s);" +
+                "  }" +
+                // 2. 自动播放: 找到 video,muted+play+延迟取消 muted
+                "  var v=document.querySelector('video');" +
+                "  if(v){" +
+                "    try{" +
+                "    if(v.paused&&!v.__gvAp){" +
+                "      v.__gvAp=true;" +
+                "      v.muted=true;" +
+                "      var p=v.play();" +
+                "      if(p&&p.then){" +
+                "        p.then(function(){setTimeout(function(){v.muted=false;},2000);}).catch(function(e){v.__gvAp=false;});" +
+                "      } else {" +
+                "        setTimeout(function(){v.muted=false;},2000);" +
                 "      }" +
-                "      }catch(e){}" +
                 "    }" +
-                "    count++;" +
-                "    if(count<300)setTimeout(tick,200);" +
+                "    }catch(e){}" +
                 "  }" +
-                // DOM 就绪后启动轮询(onPageStart 注入时 DOM 可能还没就绪)
-                "  if(document.readyState==='complete'||document.readyState==='interactive'){" +
-                "    tick();" +
-                "  } else {" +
-                "    document.addEventListener('DOMContentLoaded',tick);" +
+                // 3. 点击 CCTV 全屏按钮(网页全屏=CSS放大,非 HTML5 Fullscreen API)
+                "  try{" +
+                "  var fs=document.querySelector('#player_pagefullscreen_yes_player')||document.querySelector('.videoFull');" +
+                "  if(fs&&!fs.__gvClicked){" +
+                "    fs.__gvClicked=true;" +
+                "    fs.click();" +
+                "    console.log('[CCTV-GV] clicked fullscreen btn');" +
                 "  }" +
+                "  }catch(e){}" +
                 "})()";
         geckoSession.loadUri("javascript:" + js);
-        Log.i("CCTV-TV", "GeckoView 注入自动播放脚本(无CSS/无requestFullscreen)");
+        Log.i("CCTV-TV", "GeckoView 注入自动播放+全屏");
     }
 
     /**
@@ -1000,6 +1017,8 @@ public final class MainActivity extends Activity {
             geckoView.requestFocus();
             Log.i("CCTV-TV", "GeckoView 加载: " + url);
             geckoSession.loadUri(url);
+            // 直接调度自动播放(onPageStop 可能因 CCTV 心跳不触发,这里做主调用)
+            scheduleGeckoAutoPlay();
         } else {
             // GeckoView 不可用,回退到 WebView(带桌面 UA)
             Log.w("CCTV-TV", "GeckoView 不可用,回退到 WebView");
