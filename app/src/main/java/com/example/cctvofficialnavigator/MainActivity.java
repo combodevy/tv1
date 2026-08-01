@@ -428,9 +428,12 @@ public final class MainActivity extends Activity {
                 "    '.jiemuguanwang18950_zhibo_ind01,.zhibo19629_ind01,.playingVideo{width:100vw!important;height:100vh!important;margin:0!important;padding:0!important;position:absolute!important;left:0!important;top:0!important}'+" +
                 // 容器层: 所有常见的 CCTV 播放器容器 id/class + iframe 内嵌播放器
                 "    '.video_left,.video_right_main,.video_flash,.video_box,#player,#player_container,#live_player{width:100vw!important;height:100vh!important;margin:0!important;padding:0!important;position:absolute!important;left:0!important;top:0!important;background:#000!important;border:0!important}'+" +
-                // iframe: 全部隐藏。CCTV 页面的 iframe 是广告(yangshipin.cn)而非播放器,
-                // 之前把所有 iframe 拉成 100vw/100vh + z-index:99999 会盖住 video 导致黑屏。
-                // video 元素(#h5player_player)是 JS 直接创建在主文档里的,不在 iframe 内。
+                // 广西台(gxtv.cn)使用阿里云 AliPlayer:常见容器 id/class (#J_prismPlayer / #prismPlayer / .prism-player)
+                "    '#J_prismPlayer,#prismPlayer,#live_prismPlayer,.prism-player{width:100vw!important;height:100vh!important;margin:0!important;padding:0!important;position:absolute!important;left:0!important;top:0!important;background:#000!important;border:0!important}'+" +
+                // 广西台播放器外壳(liangtv/频道详情页常见的 wrapper id)
+                "    '#play-box,#videoBox,#playBox,.player-wrap,.live-wrap{width:100vw!important;height:100vh!important;margin:0!important;padding:0!important;position:absolute!important;left:0!important;top:0!important;background:#000!important}'+" +
+                // iframe: CCTV 页面的 iframe 是广告(yangshipin.cn)而非播放器,直接隐藏。
+                //   AliPlayer H5 模式直接在主文档建 <video>,不依赖 iframe;如果将来碰到用 iframe 的变种,再针对性放行。
                 "    'iframe{display:none!important}'+" +
                 // video 元素: 固定全屏 + 最高 z-index,确保在所有元素之上
                 // 加 transform/translateZ 强制触发 GPU 合成层,修复某些 WebView 上有声无画问题
@@ -438,9 +441,14 @@ public final class MainActivity extends Activity {
                 // #h5player_player 是 CCTV 播放器创建的 video 元素 ID
                 "    '#h5player_player{position:fixed!important;display:block!important;visibility:visible!important;opacity:1!important;width:100vw!important;height:100vh!important;min-width:100vw!important;min-height:100vh!important;left:0!important;top:0!important;z-index:999999!important;object-fit:contain!important;background:#000!important;transform:translateZ(0)!important;backface-visibility:hidden!important}'+" +
                 // 播放器容器: 确保尺寸不为 0,overflow 不裁剪 video
-                "    '#player,#player_container,.video_box,.video_flash,.video_left{overflow:visible!important;width:100vw!important;height:100vh!important}'+" +
+                "    '#player,#player_container,.video_box,.video_flash,.video_left,#J_prismPlayer,#prismPlayer,.prism-player{overflow:visible!important;width:100vw!important;height:100vh!important}'+" +
                 // 装饰元素: 隐藏 (桌面版的顶部 CCTV 大导航栏也必须隐藏)
-                "    '.video_right,.video_btnBar,.bg_top_h_tile,.bg_top_owner,.bg_bottom_h_tile,header,footer,nav,.vspace,.column_wrapper,.nav,.topbar,.sitemap,.shares{display:none!important}';" +
+                // + AliPlayer 控制栏/水印/封面/大播放按钮 (.prism-controlbar .prism-big-play-btn .prism-cover .prism-watermark .prism-live-tip)
+                // + 广西台页面常见装饰 (.header .nav .footer .channel-list .channel-detail .program-list .live-info .share-bar .page-header .page-footer .breadcrumb)
+                "    '.video_right,.video_btnBar,.bg_top_h_tile,.bg_top_owner,.bg_bottom_h_tile,header,footer,nav,.vspace,.column_wrapper,.nav,.topbar,.sitemap,.shares,'+" +
+                "    '.prism-controlbar,.prism-big-play-btn,.prism-cover,.prism-watermark,.prism-live-tip,.prism-info-panel,.prism-fullscreen-btn,'+" +
+                "    '.header,.channel-list,.channel-detail,.program-list,.live-info,.share-bar,.page-header,.page-footer,.breadcrumb,'+" +
+                "    '.m-navbar,.m-footer,.m-live-detail,.m-program-guide,.m-live-side,.gxtv-header,.gxtv-footer,.m-side-share{display:none!important}';" +
                 "  function applyCss(){" +
                 "    if(document.getElementById('cctv-tv-style'))return;" +
                 "    var s=document.createElement('style');" +
@@ -521,6 +529,23 @@ public final class MainActivity extends Activity {
                 "      p.style.zIndex='999998';" +
                 "      p.style.background='#000';" +
                 "    }" +
+                // 广西台 AliPlayer 常见容器: #J_prismPlayer / #prismPlayer / #play-box 等,也要拉成 100vw/100vh
+                "    var aliContainers=document.querySelectorAll('#J_prismPlayer,#prismPlayer,#live_prismPlayer,#play-box,#videoBox,#playBox');" +
+                "    for(var i=0;i<aliContainers.length;i++){" +
+                "      var ap=aliContainers[i];" +
+                "      ap.style.position='fixed';" +
+                "      ap.style.left='0';" +
+                "      ap.style.top='0';" +
+                "      ap.style.width='100vw';" +
+                "      ap.style.height='100vh';" +
+                "      ap.style.zIndex='999998';" +
+                "      ap.style.background='#000';" +
+                "      ap.style.margin='0';" +
+                "      ap.style.padding='0';" +
+                "    }" +
+                // 隐藏 AliPlayer 控制栏/水印/大播放按钮等非视频元素(不影响 video 元素本身的显示)
+                "    var prismDecor=document.querySelectorAll('.prism-controlbar,.prism-big-play-btn,.prism-cover,.prism-watermark,.prism-live-tip,.prism-info-panel,.prism-fullscreen-btn');" +
+                "    for(var i=0;i<prismDecor.length;i++){prismDecor[i].style.display='none';}" +
                 // 隐藏所有 iframe(广告等),确保不盖住 video
                 "    var ifs=document.querySelectorAll('iframe');" +
                 "    for(var i=0;i<ifs.length;i++){ifs[i].style.display='none';}" +
@@ -1091,8 +1116,17 @@ public final class MainActivity extends Activity {
             String host = new URI(url).getHost();
             if (host == null) return false;
             host = host.toLowerCase(Locale.ROOT);
-            return host.equals("cctv.com") || host.endsWith(".cctv.com")
-                    || host.equals("cntv.cn") || host.endsWith(".cntv.cn");
+            // CCTV 官方主域名
+            if (host.equals("cctv.com") || host.endsWith(".cctv.com")) return true;
+            if (host.equals("cntv.cn") || host.endsWith(".cntv.cn")) return true;
+            // 广西网络广播电视台(广西新闻频道等官方直播页)
+            if (host.equals("gxtv.cn") || host.endsWith(".gxtv.cn")) return true;
+            // 广西台流媒体 CDN(liangtv.cn = 亮TV,广西台合作的官方直播流 CDN)
+            if (host.equals("liangtv.cn") || host.endsWith(".liangtv.cn")) return true;
+            // 广西台使用阿里云 AliPlayer 播放器(官方 CDN 资源,非第三方广告)
+            if (host.equals("alicdn.com") || host.endsWith(".alicdn.com")) return true;
+            if (host.equals("aliyun.com") || host.endsWith(".aliyun.com")) return true;
+            return false;
         } catch (Exception ignored) {
             return false;
         }
