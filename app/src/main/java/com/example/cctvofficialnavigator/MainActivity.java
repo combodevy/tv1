@@ -582,8 +582,16 @@ public final class MainActivity extends Activity {
                 "    '#J_prismPlayer,#prismPlayer,#live_prismPlayer,.prism-player{width:100vw!important;height:100vh!important;margin:0!important;padding:0!important;position:absolute!important;left:0!important;top:0!important;background:#000!important;border:0!important}'+" +
                 // 广西台播放器外壳(liangtv/频道详情页常见的 wrapper id)
                 "    '#play-box,#videoBox,#playBox,.player-wrap,.live-wrap{width:100vw!important;height:100vh!important;margin:0!important;padding:0!important;position:absolute!important;left:0!important;top:0!important;background:#000!important}'+" +
-                // 央视频桌面端(yangshipin.cn/tv/home)播放器容器(CMGPlayer / 腾讯云txp):桌面UA访问后
-                //   实际是 CMGPlayer 内嵌 txp_player,把这几种常见 id/class 都拉满全屏,确保父级尺寸不为0。
+                // 央视频桌面端(yangshipin.cn/tv/home)真实容器链(2026-08-01实机确认):
+                //   根: .tv-home / .tv / .tv-main / .tv-main-con
+                //   左侧播放器区: .tv-main-con-l → .tv-main-con-l-vid → #vodbox<pid>.c-container.img → .video-con
+                //   播放器实际用的是 video.js (class=video-js ...)
+                "    '.tv-home,.tv,.tv-main,.tv-main-con,.tv-main-con-l,.tv-main-con-l-vid,.tv-home-list,.comPadding,#app,'+" + // 整体容器
+                "    '[id^=vodbox],.c-container,.img,.video-con,'+" +                           // 真实视频包装层 (id前缀 vodbox)
+                "    '.video-js,.vjs-fluid,.vjs-big-play-centered,'+" +                        // video.js 容器
+                "    'video[id^=myvideo]{'+" +                                                   // VIDEO 元素(id前缀 myvideo)
+                "       'width:100vw!important;height:100vh!important;margin:0!important;padding:0!important;position:absolute!important;left:0!important;top:0!important;background:#000!important;border:0!important}'+" +
+                // 央视频桌面端旧播放器(保留兼容,防止页面改版回滚):CMGPlayer / 腾讯云txp
                 "    '#cmgPlayer,.CMGPlayer,#cmg_player,.cmg-player-wrap,.cmgplayer-wrap,.ysp-player,.yspPlayer,.tv-player-wrap,.tv-player-container,.player-main-wrap,.ysp-player-wrap,.ysp-player-box,.txp_container,.txp_video_container{width:100vw!important;height:100vh!important;margin:0!important;padding:0!important;position:absolute!important;left:0!important;top:0!important;background:#000!important;border:0!important}'+" +
                 // iframe: CCTV 页面的 iframe 是广告(yangshipin.cn)而非播放器,直接隐藏。
                 //   AliPlayer H5 模式直接在主文档建 <video>,不依赖 iframe;如果将来碰到用 iframe 的变种,再针对性放行。
@@ -591,10 +599,12 @@ public final class MainActivity extends Activity {
                 // video 元素: 固定全屏 + 最高 z-index,确保在所有元素之上
                 // 加 transform/translateZ 强制触发 GPU 合成层,修复某些 WebView 上有声无画问题
                 "    'video{position:fixed!important;display:block!important;visibility:visible!important;opacity:1!important;width:100vw!important;height:100vh!important;min-width:100vw!important;min-height:100vh!important;left:0!important;top:0!important;z-index:999999!important;object-fit:contain!important;background:#000!important;transform:translateZ(0)!important;backface-visibility:hidden!important}'+" +
-                // #h5player_player 是 CCTV 播放器创建的 video 元素 ID
-                "    '#h5player_player{position:fixed!important;display:block!important;visibility:visible!important;opacity:1!important;width:100vw!important;height:100vh!important;min-width:100vw!important;min-height:100vh!important;left:0!important;top:0!important;z-index:999999!important;object-fit:contain!important;background:#000!important;transform:translateZ(0)!important;backface-visibility:hidden!important}'+" +
+                // #h5player_player 是 CCTV 播放器创建的 video 元素 ID,video[id^=myvideo] 是 yangshipin tv-home video.js 创建的 video ID 前缀
+                "    '#h5player_player,video[id^=myvideo]{position:fixed!important;display:block!important;visibility:visible!important;opacity:1!important;width:100vw!important;height:100vh!important;min-width:100vw!important;min-height:100vh!important;left:0!important;top:0!important;z-index:999999!important;object-fit:contain!important;background:#000!important;transform:translateZ(0)!important;backface-visibility:hidden!important}'+" +
+                // video.js 大播放按钮 / 封面 / 控制栏 必须隐藏(否则就是用户看到的灰色封面+大黑三角)
+                "    '.vjs-big-play-button,.vjs-poster,.vjs-control-bar,.vjs-text-track-display,.vjs-error-display,.vjs-loading-spinner,.vjs-modal-dialog{display:none!important;opacity:0!important;visibility:hidden!important}'+" +
                 // 播放器容器: 确保尺寸不为 0,overflow 不裁剪 video
-                "    '#player,#player_container,.video_box,.video_flash,.video_left,#J_prismPlayer,#prismPlayer,.prism-player,#cmgPlayer,.CMGPlayer,.ysp-player,.tv-player-wrap,.player-main-wrap,.txp_container{overflow:visible!important;width:100vw!important;height:100vh!important}'+" +
+                "    '#player,#player_container,.video_box,.video_flash,.video_left,#J_prismPlayer,#prismPlayer,.prism-player,#cmgPlayer,.CMGPlayer,.ysp-player,.tv-player-wrap,.player-main-wrap,.txp_container,.tv,.tv-main,.tv-main-con,.tv-main-con-l,.tv-main-con-l-vid,[id^=vodbox],.video-con,.video-js{overflow:visible!important;width:100vw!important;height:100vh!important}'+" +
                 // 装饰元素: 隐藏 (桌面版的顶部 CCTV 大导航栏也必须隐藏)
                 // + AliPlayer 控制栏/水印/封面/大播放按钮 (.prism-controlbar .prism-big-play-btn .prism-cover .prism-watermark .prism-live-tip)
                 // + 广西台页面常见装饰 (.header .nav .footer .channel-list .channel-detail .program-list .live-info .share-bar .page-header .page-footer .breadcrumb)
@@ -616,6 +626,20 @@ public final class MainActivity extends Activity {
                 "    '.ysp-control,.player-controls,.ysp-bottom-bar,.ysp-player-bar,.control-bar-container,'+" +
                 // 顶部LOGO/搜索/个人中心
                 "    '.ysp-logo,.logo-box,.logo-wrap,.search-box,.search-bar,.search-wrap,.user-area,.user-center,.user-profile,.header-logo-wrap,'+" +
+                // 央视频桌面端 tv/home 真实装饰(2026-08-01实机抓DOM确认):
+                //   .header-b: 顶部整行(推荐/电视/赛事/更多 + 搜索 + 登录下载)
+                //   .header-b-l / header-b-m / header-b-r: 顶部左中右三块
+                //   .tv-home-list: 下方CCTV1~CCTV17所有频道的列表区(非常占地方)
+                //   .tv-home .tv-home-list: 首页列表整体(包括所有付费/免费台)
+                //   .tv-main-con-r: 右侧"直播节目单/相关推荐"区域(播放器右侧)
+                //   .searchMinHeight: 搜索结果/频道列表外层
+                //   .actComWidth-item / comPadding: 全局padding/布局容器(非播放器外层)
+                //   .tv: 页面中间整体,我们只需要取 .tv-main-con-l 部分播放器,其他都隐藏
+                "    '.header-b,.header-b-l,.header-b-m,.header-b-r,'+" +
+                "    '.tv-home-list,.searchMinHeight,'+" +
+                "    '.tv-main-con-r,.tv-right-con,.right-side-wrap,.tv-aside,.tv-right,'+" +
+                "    '.channel-scroll,.channel-tabs-wrapper,.channel-nav-wrap,.channel-nav,'+" +
+                "    '.live-tip,.copyright-bar,.footer-bar,.top-banner,.bottom-banner,.app-promo,'+" +
                 // "#开头的装饰ID"
                 "    '#YSP_HEADER,#YSP_FOOTER,#ysp_download,#ysp_login,#ysp_attention,#ysp_share,#ysp_program,#ysp_related,#ysp_recommend,'+" +
                 "    '#open-ysp-app,#ysp-open-app,#ysp-side-nav-left,#ysp-side-nav-right,#ysp-channel-list,#ysp-program-guide,'+" +
@@ -651,31 +675,55 @@ public final class MainActivity extends Activity {
         String js =
                 "(function(){" +
                 "  function ForceFullscreen(){" +
-                // 优先用 #h5player_player(CCTV 播放器创建的 video 元素 ID),兜底用 video 标签
-                "    var v=document.getElementById('h5player_player')||document.querySelector('video');" +
+                // 1) 定位 video 元素
+                //    优先级:
+                //      ① video[id^=myvideo]  → yangshipin tv/home video.js 播放器 (ID动态前缀,2026-08-01实机确认)
+                //      ② document.querySelector('.video-js video, video.video-js') → 其他 video.js 场景
+                //      ③ #h5player_player     → CCTV 移动版(tv.cctv.com) HLSP2P 播放器
+                //      ④ 第一个 <video>         → 兜底
+                "    var v=document.querySelector('video[id^=myvideo]')" +
+                "       || document.querySelector('.video-js video')" +
+                "       || document.querySelector('video.video-js')" +
+                "       || document.getElementById('h5player_player')" +
+                "       || document.querySelector('video');" +
+                // 2) 如果是 video.js,还可以优先通过 videojs API 拿 player,确保 muted/play 生效
+                "    try{" +
+                "      if(window.videojs&&v&&v.id){" +
+                "        var vp=window.videojs.getPlayer&&window.videojs.getPlayer(v.id);" +
+                "        if(vp){v.__cctvVjsPlayer=vp;}" +
+                "      }" +
+                "    }catch(e){}" +
                 "    if(v){" +
                 "      try{v.volume=1;}catch(e){}" +
-                // 自动播放策略修复:CCTV 的 HLSP2P 播放器创建了 video 元素并加载了流(960x540),
-                // 但因 muted=false + 自动播放策略,video.play() 被 reject,导致 paused=true → 黑屏。
+                // 自动播放策略修复:所有播放器创建 video 后,因 muted=false + 自动播放策略,
+                // video.play() 被 reject → paused=true,画面停在大播放按钮。
                 // 修复:先 muted=true 触发 play(),播放成功后延迟 2 秒取消 muted 恢复声音。
                 // 用 __cctvAutoplayStarted 防止重复触发。
                 "      try{" +
                 "      if(v.paused&&!v.__cctvAutoplayStarted){" +
                 "        v.__cctvAutoplayStarted=true;" +
                 "        v.muted=true;" +
-                "        var p=v.play();" +
-                "        if(p&&p.then){" +
-                "          p.then(function(){" +
-                "            setTimeout(function(){v.muted=false;},2000);" +
-                "            try{v.webkitRequestFullscreen();}catch(e){}" +
-                "          }).catch(function(e){v.__cctvAutoplayStarted=false;});" +
-                "        }else{" +
-                "          setTimeout(function(){v.muted=false;},2000);" +
-                "          try{v.webkitRequestFullscreen();}catch(e){}" +
-                "        }" +
+                // 如果拿到了 video.js player,优先用 videojs play()(内部处理 readyState/poster)
+                "        var pp=v.__cctvVjsPlayer?v.__cctvVjsPlayer.play():v.play();" +
+                "        var p2=pp;if(!(p2&&p2.then)){p2=Promise.resolve();}" +
+                "        p2.then(function(){" +
+                "          setTimeout(function(){" +
+                "            try{v.muted=false;}catch(e){}" +
+                "            if(v.__cctvVjsPlayer){try{v.__cctvVjsPlayer.muted(false);}catch(e){}}" +
+                "          },2000);" +
+                "          try{if(v.webkitRequestFullscreen){v.webkitRequestFullscreen();}}" +
+                "            catch(e){}" +
+                "        }).catch(function(e){" +
+                "          v.__cctvAutoplayStarted=false;" +
+                // 兜底:直接点一下 video.js 大播放按钮(video.js 的自动播放策略有时需要点击事件)
+                "          var b=document.querySelector('.vjs-big-play-button');" +
+                "          if(b){try{b.click();}catch(e2){}}" +
+                "        });" +
                 "      }" +
                 "    }catch(e){}" +
+                // 触发 HTML5 原生全屏 → WebView 用 SurfaceView 渲染视频(最靠谱的方式)
                 "    try{if(v.webkitRequestFullscreen&&!v.__cctvFsRequested){v.__cctvFsRequested=true;v.webkitRequestFullscreen();}}catch(e){}" +
+                // 直接用内联 style 拉满 video 元素(优先级高,覆盖 CSS)
                 "    v.style.position='fixed';" +
                 "      v.style.display='block';" +
                 "      v.style.visibility='visible';" +
@@ -690,6 +738,7 @@ public final class MainActivity extends Activity {
                 "      v.style.objectFit='contain';" +
                 "      v.style.background='#000';" +
                 "    }" +
+                // 3) 容器层(固定全屏高 z-index,覆盖 CCTV 移动版 / AliPlayer / yangshipin video.js 三种)
                 "    var p=document.getElementById('player');" +
                 "    if(p){" +
                 "      p.style.position='fixed';" +
@@ -700,6 +749,25 @@ public final class MainActivity extends Activity {
                 "      p.style.zIndex='999998';" +
                 "      p.style.background='#000';" +
                 "    }" +
+                // yangshipin 桌面端 tv/home 真实容器链(2026-08-01实机确认)
+                // .tv-main-con-l(左侧播放器区) → .tv-main-con-l-vid → #vodbox<PID> → .video-con → VIDEO
+                "    var yshContainers=document.querySelectorAll('.tv, .tv-main, .tv-main-con, .tv-main-con-l, .tv-main-con-l-vid, [id^=vodbox], .video-con, .video-js, .vjs-tech, .vjs-fluid');" +
+                "    for(var yi=0;yi<yshContainers.length;yi++){" +
+                "      var yc=yshContainers[yi];" +
+                "      yc.style.position='absolute';" +
+                "      yc.style.left='0';" +
+                "      yc.style.top='0';" +
+                "      yc.style.width='100vw';" +
+                "      yc.style.height='100vh';" +
+                "      yc.style.zIndex='999998';" +
+                "      yc.style.background='#000';" +
+                "      yc.style.margin='0';" +
+                "      yc.style.padding='0';" +
+                "      yc.style.overflow='visible';" +
+                "    }" +
+                // 隐藏 video.js 装饰:大播放按钮(灰色封面+黑色三角就是这个)/poster/控制栏/加载转圈/错误框
+                "    var vjsDecor=document.querySelectorAll('.vjs-big-play-button, .vjs-poster, .vjs-control-bar, .vjs-loading-spinner, .vjs-error-display, .vjs-modal-dialog, .vjs-text-track-display, .vjs-title-bar');" +
+                "    for(var vj=0;vj<vjsDecor.length;vj++){var d=vjsDecor[vj];d.style.display='none';d.style.visibility='hidden';d.style.opacity='0';}" +
                 // 广西台 AliPlayer 常见容器: #J_prismPlayer / #prismPlayer / #play-box 等,也要拉成 100vw/100vh
                 "    var aliContainers=document.querySelectorAll('#J_prismPlayer,#prismPlayer,#live_prismPlayer,#play-box,#videoBox,#playBox');" +
                 "    for(var i=0;i<aliContainers.length;i++){" +
@@ -717,8 +785,17 @@ public final class MainActivity extends Activity {
                 // 隐藏 AliPlayer 控制栏/水印/大播放按钮等非视频元素(不影响 video 元素本身的显示)
                 "    var prismDecor=document.querySelectorAll('.prism-controlbar,.prism-big-play-btn,.prism-cover,.prism-watermark,.prism-live-tip,.prism-info-panel,.prism-fullscreen-btn');" +
                 "    for(var i=0;i<prismDecor.length;i++){prismDecor[i].style.display='none';}" +
-                // 隐藏央视频 yangshipin 装饰:登录/下载/关注/推荐/节目/版权 + 腾讯 txplayer 控件层
-                "    var yspDecor=document.querySelectorAll('.ysp-header,.ysp-footer,.ysp-login,.ysp-download,.ysp-related,.ysp-program,.ysp-side-nav,.ysp-detail,.ysp-epg,.ysp-recommend,.app-download-btn,.follow-btn,.attention-btn,.login-bar,.share-box,.program-list,.recommend-list,.comment-box,.bottom-copyright,.txp_layer_bottom,.txp_top_title,.txp_vip_tip,.txp_mini_tip,.txp_btn,.txp_right_menu,#YSP_HEADER,#YSP_FOOTER,#ysp_download,#ysp_login,#ysp_attention,#ysp_share,#ysp_program,#ysp_related,#ysp_recommend');" +
+                // 隐藏央视频 yangshipin 装饰(旧版+新版 tv/home)
+                "    var yspDecor=document.querySelectorAll(" +
+                "      '.ysp-header,.ysp-footer,.ysp-login,.ysp-download,.ysp-related,.ysp-program,.ysp-side-nav,.ysp-detail,.ysp-epg,.ysp-recommend,'+" +
+                "      '.app-download-btn,.follow-btn,.attention-btn,.login-bar,.share-box,.program-list,.recommend-list,.comment-box,.bottom-copyright,'+" +
+                "      '.txp_layer_bottom,.txp_top_title,.txp_vip_tip,.txp_mini_tip,.txp_btn,.txp_right_menu,'+" +
+                "      // yangshipin 桌面端 tv/home 真实装饰(2026-08-01实机确认)" +
+                "      '.header-b,.header-b-l,.header-b-m,.header-b-r,.tv-home-list,.searchMinHeight,'+" +
+                "      '.tv-main-con-r,.tv-right-con,.right-side-wrap,.tv-aside,.tv-right,'+" +
+                "      '.channel-scroll,.channel-tabs-wrapper,.channel-nav-wrap,.channel-nav,'+" +
+                "      '.live-tip,.copyright-bar,.footer-bar,.top-banner,.bottom-banner,.app-promo,'+" +
+                "      '#YSP_HEADER,#YSP_FOOTER,#ysp_download,#ysp_login,#ysp_attention,#ysp_share,#ysp_program,#ysp_related,#ysp_recommend');" +
                 "    for(var i=0;i<yspDecor.length;i++){yspDecor[i].style.display='none';}" +
                 // 隐藏所有 iframe(广告等),确保不盖住 video
                 "    var ifs=document.querySelectorAll('iframe');" +
@@ -1009,7 +1086,12 @@ public final class MainActivity extends Activity {
         }, 2, TimeUnit.SECONDS);
         String js =
                 "(function(){" +
-                "  var v=document.getElementById('h5player_player')||document.querySelector('video');" +
+                // 定位 video:优先级与 ForceFullscreen 完全一致(video.js > h5player > 兜底)
+                "  var v=document.querySelector('video[id^=myvideo]')" +
+                "     || document.querySelector('.video-js video')" +
+                "     || document.querySelector('video.video-js')" +
+                "     || document.getElementById('h5player_player')" +
+                "     || document.querySelector('video');" +
                 "  var m3u8=window.__cctvM3u8Url||'';" +
                 "  if(v){" +
                 "    var r=v.getBoundingClientRect();" +
@@ -1017,7 +1099,18 @@ public final class MainActivity extends Activity {
                 "    var diag='x='+Math.round(r.left)+' y='+Math.round(r.top)+' w='+Math.round(r.width)+' h='+Math.round(r.height)+" +
                 "             ' display='+cs.display+' visibility='+cs.visibility+' opacity='+cs.opacity+" +
                 "             ' zIndex='+cs.zIndex+' objectFit='+cs.objectFit+' muted='+v.muted+' paused='+v.paused+" +
-                "             ' vw='+v.videoWidth+' vh='+v.videoHeight;" +
+                "             ' vw='+v.videoWidth+' vh='+v.videoHeight+" +
+                "             ' id='+(v.id||'');" +
+                // video.js 特有:poster / big-play-button 是否还可见(是 = 没开始播放或封面没隐藏)
+                "    var poster=document.querySelector('.vjs-poster');var bigBtn=document.querySelector('.vjs-big-play-button');" +
+                "    if(poster){var s1=getComputedStyle(poster);diag+=' vjs_poster_disp='+s1.display+'_op='+s1.opacity;}" +
+                "    if(bigBtn){var s2=getComputedStyle(bigBtn);diag+=' vjs_bigbtn_disp='+s2.display+'_op='+s2.opacity;}" +
+                // yangshipin tv/home 特有:装饰元素是否被成功隐藏(如果还存在说明CSS/JS注入没生效)
+                "    var tHeader=document.querySelector('.header-b');var tList=document.querySelector('.tv-home-list');" +
+                "    var tRight=document.querySelector('.tv-main-con-r');" +
+                "    if(tHeader){diag+=' header_b='+(tHeader.offsetParent===null?'HIDDEN':'VISIBLE('+tHeader.offsetHeight+'px)');}" +
+                "    if(tList){diag+=' tv_home_list='+(tList.offsetParent===null?'HIDDEN':'VISIBLE('+tList.offsetHeight+'px)');}" +
+                "    if(tRight){diag+=' tv_right='+(tRight.offsetParent===null?'HIDDEN':'VISIBLE('+tRight.offsetWidth+'px)');}" +
                 "    var st=v.paused?'PAUSED':((v.videoWidth===0||v.videoHeight===0)?'BLACK_SCREEN':'PLAYING');" +
                 "    return 'OK:'+st+' src='+(v.src||v.currentSrc||'none').substring(0,60)+'|M3U8='+m3u8+'|'+diag;" +
                 "  }" +
@@ -1033,11 +1126,16 @@ public final class MainActivity extends Activity {
                 "  info.push('M3U8='+m3u8);" +
                 "  info.push('已等='+" + (elapsedMs/1000) + ");" +
                 "  info.push('URL='+location.href);" +
+                "  info.push('HOST='+location.host);" +
                 "  info.push('TITLE='+document.title);" +
                 "  info.push('RS='+document.readyState);" +
                 "  info.push('videos='+document.getElementsByTagName('video').length);" +
                 "  info.push('imgs='+document.getElementsByTagName('img').length);" +
                 "  info.push('scripts='+document.getElementsByTagName('script').length);" +
+                "  info.push('videoJS='+(typeof window.videojs)+' getPlayers='+(window.videojs&&typeof window.videojs.getPlayers==='function'?Object.keys(window.videojs.getPlayers()).join(','):'null'));" +
+                // yangshipin tv/home 特有诊断:video.js 容器 / 装饰 / vodbox 是否存在
+                "  info.push('hasVideoJSCls='+(document.querySelector('.video-js')?'YES':'NO')+' hasVodBox='+(document.querySelector('[id^=vodbox]')?'YES':'NO'));" +
+                "  info.push('header_b_h='+((document.querySelector('.header-b')||{}).offsetHeight||0)+' tv_home_list_h='+((document.querySelector('.tv-home-list')||{}).offsetHeight||0));" +
                 "  info.push('MediaKeys='+(window.MediaKeys?'YES':'NO'));" +
                 "  info.push('MSE='+(window.MediaSource?'YES':'NO'));" +
                 "  info.push('WASM='+(typeof WebAssembly==='object'?'YES:'+(typeof WebAssembly))+' Worker='+(typeof Worker==='function'?'YES':'NO')+' WebRTC='+(typeof RTCPeerConnection==='function'?'YES':'NO'));" +
@@ -1047,6 +1145,7 @@ public final class MainActivity extends Activity {
                 "  if(player){info.push('playerChildren='+player.children.length);info.push('playerHTML='+player.innerHTML.substring(0,200));}else{info.push('player=null');}" +
                 "  var h5p=document.getElementById('h5player');" +
                 "  if(h5p){info.push('h5playerHTML='+h5p.innerHTML.substring(0,200));}else{info.push('h5player=null');}" +
+                "  if(videoInfo.length>0){info.push('videoList='+videoInfo.join(' || '));}" +
                 "  info.push('BODY='+txt.substring(0,120));" +
                 "  info.push('UA='+navigator.userAgent.substring(0,60));" +
                 "  return 'NO_VIDEO|'+info.join('\\n');" +
@@ -1098,9 +1197,34 @@ public final class MainActivity extends Activity {
                     injectHlsPlayer(capturedM3u8Url);
                 }
             } else if (state.contains("PAUSED")) {
-                // video 元素存在但暂停 → 自动播放策略阻止。用 muted + play() 策略
+                // video 元素存在但暂停 → 自动播放策略阻止。用 muted + play() 策略(优先 video.js API)
                 webView.evaluateJavascript(
-                        "(function(){var v=document.getElementById('h5player_player')||document.querySelector('video');if(v&&!v.__cctvAutoplayStarted){v.__cctvAutoplayStarted=true;v.muted=true;var p=v.play();if(p&&p.then){p.then(function(){setTimeout(function(){v.muted=false;},2000);}).catch(function(e){v.__cctvAutoplayStarted=false;});}else{setTimeout(function(){v.muted=false;},2000);}}return true;})()",
+                        "(function(){" +
+                        "  var v=document.querySelector('video[id^=myvideo]')" +
+                        "     || document.querySelector('.video-js video')" +
+                        "     || document.querySelector('video.video-js')" +
+                        "     || document.getElementById('h5player_player')" +
+                        "     || document.querySelector('video');" +
+                        "  if(!v)return 'no_video';" +
+                        // 隐藏 video.js 海报/大播放按钮(防止画面还是灰色封面大三角)
+                        "  var decor=document.querySelectorAll('.vjs-poster,.vjs-big-play-button,.vjs-control-bar,.vjs-loading-spinner,.vjs-error-display,.vjs-modal-dialog');" +
+                        "  for(var i=0;i<decor.length;i++){decor[i].style.display='none';decor[i].style.visibility='hidden';decor[i].style.opacity='0';}" +
+                        // 优先用 videojs.getPlayer API 拿 player(内部处理 readyState/poster 清理)
+                        "  var pp=null;if(window.videojs&&v.id){try{pp=window.videojs.getPlayer(v.id);}catch(e){pp=null;}}" +
+                        "  if(v&&!v.__cctvAutoplayStarted){" +
+                        "    v.__cctvAutoplayStarted=true;v.muted=true;" +
+                        "    var p2=pp?pp.play():v.play();if(!(p2&&p2.then))p2=Promise.resolve();" +
+                        "    p2.then(function(){" +
+                        "      setTimeout(function(){try{v.muted=false;}catch(e){}if(pp){try{pp.muted(false);}catch(e2){}}},2000);" +
+                        "      try{if(v.webkitRequestFullscreen)v.webkitRequestFullscreen();}catch(e){}" +
+                        "    }).catch(function(e){" +
+                        "      v.__cctvAutoplayStarted=false;" +
+                        // 兜底:直接点大播放按钮
+                        "      var b=document.querySelector('.vjs-big-play-button');if(b){try{b.click();}catch(e2){}}" +
+                        "    });" +
+                        "  }" +
+                        "  return 'attempted_paused_retry';" +
+                        "})()",
                         null);
                 // 如果 10 秒后视频还是暂停的,说明 HLSP2P 播放器在 WebView 上跑不起来,
                 // 用 hls.js 兜底直接播放 m3u8
