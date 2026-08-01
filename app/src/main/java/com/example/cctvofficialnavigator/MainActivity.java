@@ -51,6 +51,11 @@ public final class MainActivity extends Activity {
     private static final String SAVED_CHANNEL_INDEX = "channel_index";
     private static final long CHANNEL_HINT_DURATION_MS = 1800L;
     private static final long WHITE_SCREEN_CHECK_DELAY_MS = 15000L;
+    // 桌面 UA:仅用于 CCTV-3/6/8。版权敏感频道在移动端 UA 下会被直接 302 重定向到
+    // https://m.yangshipin.cn/static/empty.html(刻意空白页,引导用户装央视频 APP)。
+    // 其他频道用系统默认移动 UA(桌面 UA 会让 CCTV-9 等频道黑屏无法播放)。
+    private static final String DESKTOP_UA =
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
 
     private WebView webView;
     private TextView channelHint;
@@ -95,11 +100,9 @@ public final class MainActivity extends Activity {
         settings.setJavaScriptEnabled(true);
         settings.setDomStorageEnabled(true);
         settings.setDatabaseEnabled(true);
-        // 关键:用桌面 Chrome UA,绝对不能用默认 Android WebView 移动 UA。
-        // CCTV 服务器端对移动端 UA 的版权敏感频道(CCTV-3 综艺/CCTV-6 电影/CCTV-8 电视剧)
-        // 直接 302 重定向到 https://m.yangshipin.cn/static/empty.html(刻意空白,引导装央视频 APP)。
-        // 用桌面 UA,才能拿到正确的 tv.cctv.com/live/cctv*/ 桌面版页面(带 .video_flash / #player 容器)。
-        settings.setUserAgentString("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36");
+        // 注意:这里把 UA 设为默认值。CCTV-3/6/8 这三个频道在 loadChannel 里会临时切成 DESKTOP_UA,
+        // 其他频道保持默认移动 UA。不能全频道统一桌面 UA(会导致 CCTV-9 等频道黑屏无法播放)。
+        settings.setUserAgentString(null);
         settings.setLoadsImagesAutomatically(true);
         settings.setBlockNetworkImage(false);
         settings.setMediaPlaybackRequiresUserGesture(false);
@@ -144,12 +147,17 @@ public final class MainActivity extends Activity {
                 injectDocumentWritePatch(view);
                 // 2) CSS 拉满容器 + 隐藏装饰(顺序必须在补丁之后,不能影响 document.write 覆盖)
                 injectFastLoading(view);
+                // 3) 立即启动 AutoFullscreen 轮询(不等 onPageFinished,因为 CCTV 页面的
+                //    onPageFinished 可能因持续心跳永不触发)。轮询会持续 30 秒,
+                //    即使 video 元素还没创建,一旦被 JS 动态插入就能立即拉满全屏。
+                injectAutoFullscreen(view);
             }
 
             @Override
             public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
                 updateDebugPanel("onPageFinished → " + shortenUrl(url), null);
+                // 再次注入确保覆盖(onPageStarted 注入的可能因为页面 JS 重写 DOM 而失效)
                 injectAutoFullscreen(view);
             }
 
@@ -246,26 +254,36 @@ public final class MainActivity extends Activity {
 
     /**
      * 页面一开始加载就注入 FastLoading(每 200ms 跑一次):
-     *  1. 注入强力 CSS,强制让播放器容器 #player 占满 100vw/100vh,隐藏所有非播放器装饰元素
-     *     (顶部"体育频道直播"标题条、底部版权、右侧频道列表、节目预告区、广告等)
-     *  2. 不依赖"网页全屏"按钮 click()(在某些频道上不可靠),直接 CSS 拉满
-     *  3. 不删任何脚本:之前"删脚本"曾多次误删 h5_live_index.js/liveplayer.js 导致播放器不初始化(CCTV-3/6/8 白屏根因)
-     *     装饰元素的视觉干扰全部用 CSS display:none 解决,不碰 script
-     *  4. 保留图片正常加载(CCTV 某些频道的播放器依赖图片 onload 触发 video 元素插入)
+     *  1. 注入强力 CSS,强制让播放器容器占满 100vw/100vh。兼容 3 种布局:
+     *     - 移动端默认布局(除 CCTV-3/6/8): .video_left / .video_flash / #player / .video_box
+     *     - 桌面版布局(CCTV-3/6/8 用桌面 UA): .video_left / .video_flash / #player + iframe[youtube/yangshipin 嵌套]
+     *     - 兜底: 任何 div 下的 <video>、#player_container、.video_box 新布局
+     *  2. 隐藏所有非播放器装饰元素(顶部条/底部版权/右侧频道列表/广告等)
+     *  3. 不依赖 click "网页全屏"按钮(在某些频道上不可靠)
+     *  4. 不删任何脚本:之前"删脚本"曾多次误删 h5_live_index.js/liveplayer.js 导致播放器不初始化(CCTV-3/6/8 白屏根因)
+     *  5. 保留图片正常加载(CCTV 某些频道的播放器依赖图片 onload 触发 video 元素插入)
      */
     private void injectFastLoading(WebView view) {
         String js =
                 "(function(){" +
                 "  if(window.__cctvFastLoadingInjected)return;" +
                 "  window.__cctvFastLoadingInjected=true;" +
-                // CSS:强制让 #player 容器占满整个 WebView,隐藏一切装饰元素
+                // CSS: 强力覆盖, 同时兼容 移动/桌面 两种布局, iframe 嵌套播放器也要拉满
                 "  var css=" +
                 "    'html,body{width:100%!important;height:100%!important;margin:0!important;padding:0!important;background:#000!important;overflow:hidden!important}'+" +
                 "    '.jiemuguanwang18950_zhibo_ind01,.zhibo19629_ind01,.playingVideo{width:100vw!important;height:100vh!important;margin:0!important;padding:0!important;position:absolute!important;left:0!important;top:0!important}'+" +
-                "    '.video_left,.video_flash,#player{width:100vw!important;height:100vh!important;margin:0!important;padding:0!important;position:absolute!important;left:0!important;top:0!important;background:#000!important}'+" +
-                "    'video{width:100vw!important;height:100vh!important;object-fit:contain!important;background:#000!important}'+" +
-                // 装饰元素:隐藏
-                "    '.video_right,.video_btnBar,.bg_top_h_tile,.bg_top_owner,.bg_bottom_h_tile,header,footer,nav,.vspace,.column_wrapper{display:none!important}';" +
+                // 容器层: 所有常见的 CCTV 播放器容器 id/class + iframe 内嵌播放器
+                "    '.video_left,.video_right_main,.video_flash,.video_box,#player,#player_container,#live_player{width:100vw!important;height:100vh!important;margin:0!important;padding:0!important;position:absolute!important;left:0!important;top:0!important;background:#000!important;border:0!important}'+" +
+                // iframe: 全部隐藏。CCTV 页面的 iframe 是广告(yangshipin.cn)而非播放器,
+                // 之前把所有 iframe 拉成 100vw/100vh + z-index:99999 会盖住 video 导致黑屏。
+                // video 元素(#h5player_player)是 JS 直接创建在主文档里的,不在 iframe 内。
+                "    'iframe{display:none!important}'+" +
+                // video 元素: 固定全屏 + 最高 z-index,确保在所有元素之上
+                "    'video{position:fixed!important;width:100vw!important;height:100vh!important;left:0!important;top:0!important;z-index:999999!important;object-fit:contain!important;background:#000!important}'+" +
+                // #h5player_player 是 CCTV 播放器创建的 video 元素 ID
+                "    '#h5player_player{position:fixed!important;width:100vw!important;height:100vh!important;left:0!important;top:0!important;z-index:999999!important;object-fit:contain!important;background:#000!important}'+" +
+                // 装饰元素: 隐藏 (桌面版的顶部 CCTV 大导航栏也必须隐藏)
+                "    '.video_right,.video_btnBar,.bg_top_h_tile,.bg_top_owner,.bg_bottom_h_tile,header,footer,nav,.vspace,.column_wrapper,.nav,.topbar,.sitemap,.shares{display:none!important}';" +
                 "  function applyCss(){" +
                 "    if(document.getElementById('cctv-tv-style'))return;" +
                 "    var s=document.createElement('style');" +
@@ -297,10 +315,11 @@ public final class MainActivity extends Activity {
         String js =
                 "(function(){" +
                 "  function ForceFullscreen(){" +
-                "    var v=document.querySelector('video');" +
+                // 优先用 #h5player_player(CCTV 播放器创建的 video 元素 ID),兜底用 video 标签
+                "    var v=document.getElementById('h5player_player')||document.querySelector('video');" +
                 "    if(v){" +
                 "      try{v.volume=1;}catch(e){}" +
-                "      try{v.play();}catch(e){}" +
+                "      try{if(v.paused)v.play();}catch(e){}" +
                 "      v.style.position='fixed';" +
                 "      v.style.left='0';" +
                 "      v.style.top='0';" +
@@ -320,17 +339,33 @@ public final class MainActivity extends Activity {
                 "      p.style.zIndex='999998';" +
                 "      p.style.background='#000';" +
                 "    }" +
+                // 隐藏所有 iframe(广告等),确保不盖住 video
+                "    var ifs=document.querySelectorAll('iframe');" +
+                "    for(var i=0;i<ifs.length;i++){ifs[i].style.display='none';}" +
                 "  }" +
                 "  ForceFullscreen();" +
                 "  var count=0;" +
                 "  function loop(){" +
                 "    ForceFullscreen();" +
                 "    count++;" +
-                "    if(count<26)setTimeout(loop,300);" +
+                // 100 次 x 300ms = 30 秒,匹配 FastLoading 的持续时间
+                "    if(count<100)setTimeout(loop,300);" +
                 "  }" +
                 "  setTimeout(loop,300);" +
                 "})()";
         view.evaluateJavascript(js, null);
+    }
+
+    /**
+     * 判断频道是否需要用桌面 UA。
+     * CCTV-3 综艺 / CCTV-6 电影 / CCTV-8 电视剧:移动端 UA 会被 CCTV 服务器端直接 302 重定向
+     * 到 https://m.yangshipin.cn/static/empty.html(刻意空白的版权引导页),必须用桌面 UA 才能加载
+     * 正确的带播放器的桌面版页面。其他频道(如 CCTV-9)用桌面 UA 会黑屏播放不了。
+     */
+    private static boolean needsDesktopUA(String officialUrl) {
+        if (officialUrl == null) return false;
+        String u = officialUrl.toLowerCase(Locale.ROOT);
+        return u.contains("/cctv3") || u.contains("/cctv6") || u.contains("/cctv8");
     }
 
     private void loadChannel(int requestedIndex) {
@@ -339,8 +374,18 @@ public final class MainActivity extends Activity {
         int count = ChannelCatalog.CHANNELS.size();
         channelIndex = ((requestedIndex % count) + count) % count;
         Channel channel = ChannelCatalog.CHANNELS.get(channelIndex);
+        // 关键:在加载前切 UA
+        //  CCTV-3/6/8 → 桌面 Chrome 126(否则服务器端跳空页)
+        //  其他     → 系统默认移动 UA(桌面 UA 会让 CCTV-9 等频道黑屏)
+        WebSettings settings = webView.getSettings();
+        if (needsDesktopUA(channel.officialUrl)) {
+            settings.setUserAgentString(DESKTOP_UA);
+        } else {
+            settings.setUserAgentString(null); // null = 回退到系统默认移动 UA
+        }
         // 切换频道时先清掉诊断面板,并显示"加载中"占位
-        debugPanel.setText("加载中... 频道=" + channel.name + "\nURL=" + channel.officialUrl);
+        String uaTag = needsDesktopUA(channel.officialUrl) ? " [桌面UA]" : " [移动UA]";
+        debugPanel.setText("加载中..." + uaTag + " 频道=" + channel.name + "\nURL=" + channel.officialUrl);
         debugPanel.setVisibility(View.VISIBLE);
         webView.loadUrl(channel.officialUrl);
         showChannelHint(channel.name);
@@ -395,8 +440,8 @@ public final class MainActivity extends Activity {
         }, 2, TimeUnit.SECONDS);
         String js =
                 "(function(){" +
-                "  var v=document.querySelector('video');" +
-                "  if(v){return 'OK:'+(v.paused?'PAUSED':'PLAYING');}" +
+                "  var v=document.getElementById('h5player_player')||document.querySelector('video');" +
+                "  if(v){return 'OK:'+(v.paused?'PAUSED':'PLAYING')+' src='+(v.src||v.currentSrc||'none').substring(0,60);}" +
                 "  var txt=(document.body&&document.body.innerText||'').replace(/\\s+/g,' ').trim();" +
                 "  var info=[];" +
                 "  info.push('已等='+" + (elapsedMs/1000) + ");" +
@@ -433,7 +478,7 @@ public final class MainActivity extends Activity {
                 Toast.makeText(MainActivity.this, "白屏:" + firstLine, Toast.LENGTH_LONG).show();
             } else if (state.contains("PAUSED")) {
                 webView.evaluateJavascript(
-                        "(function(){var v=document.querySelector('video');if(v){v.play();}return true;})()",
+                        "(function(){var v=document.getElementById('h5player_player')||document.querySelector('video');if(v){v.play();}return true;})()",
                         null);
             } else {
                 // OK:视频播放中,隐藏面板
@@ -591,6 +636,15 @@ public final class MainActivity extends Activity {
             // 典型内容:"A parser-blocking, cross site ... is invoked via document.write ... MAY be blocked"
             if (msg.contains("parser-blocking") && msg.contains("document.write")) {
                 Log.d("CCTV-TV", "[I-DW] " + msg);
+                return true;
+            }
+            // yangshipin iframe 跨域访问 window.parent/top:完全正常的 CORS 拦截,不影响播放,降级
+            // 典型内容:"getWTTop error: Blocked a frame with origin 'https://ydh5.yangshipin.cn'
+            //         from accessing a cross-origin frame."
+            if ((msg.contains("Blocked a frame") || msg.contains("cross-origin frame")
+                    || msg.contains("getWTTop") || msg.contains("SecurityError"))
+                    && msg.contains("origin")) {
+                Log.d("CCTV-TV", "[I-CORS] " + msg);
                 return true;
             }
             // LOG_LEVEL_ERROR=2, LOG_LEVEL_WARNING=1, LOG_LEVEL_LOG=0
