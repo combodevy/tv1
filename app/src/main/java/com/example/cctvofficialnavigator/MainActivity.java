@@ -245,9 +245,12 @@ public final class MainActivity extends Activity {
                 "(function(){" +
                 "  if(window.__cctvDwPatched)return;" +
                 "  window.__cctvDwPatched=true;" +
-                "  var origWrite=document.write.bind(document);" +
-                "  var origWriteln=document.writeln.bind(document);" +
-                // 从 write 的字符串里抽取 <script src="...">[...]</script>
+                // 关键:不再调用原始 document.write/writeln。
+                // 异步加载的外部脚本调用 document.write 时,原始 write 会抛出
+                // "It isn't possible to write into a document from an asynchronously-loaded
+                //  external script unless it is explicitly opened",导致后续播放器初始化 JS 中断。
+                // 我们只做一件事:把 write 字符串里的 <script> 标签提取出来,用 createElement 异步插入,
+                // 其余 HTML/文本内容在 document 已关闭时无法也不应再写入,直接丢弃。
                 "  function extractScripts(html){" +
                 "    if(!html||typeof html!=='string')return [];" +
                 "    var out=[];" +
@@ -272,19 +275,14 @@ public final class MainActivity extends Activity {
                 "      var p=document.currentScript&&document.currentScript.parentNode;" +
                 "      p=p||document.head||document.documentElement;" +
                 "      p.appendChild(el);" +
-                "    }catch(e){}" +
+                "    }catch(e){console.log('[CCTV-DW] insert err: '+e.message);}" +
                 "  }" +
-                // 剥离字符串里所有 <script> 标签,转成 createElement
-                "  function patch(htmlStr){" +
+                "  function handleWrite(htmlStr){" +
                 "    var scripts=extractScripts(htmlStr);" +
-                "    if(scripts.length===0){return htmlStr;}" +
                 "    for(var i=0;i<scripts.length;i++){insertScript(scripts[i]);}" +
-                // 已经用 createElement 插入了,就把 write 里的 <script> 块删掉,避免被 parser 又遇到(再被 Chromium 拦截一次)
-                "    var cleaned=String(htmlStr).replace(/<script[^>]*>[\\s\\S]*?<\\/script>/gi,'');" +
-                "    return cleaned;" +
                 "  }" +
-                "  document.write=function(){var s='';for(var i=0;i<arguments.length;i++)s+=arguments[i];var c=patch(s);if(c)origWrite(c);};" +
-                "  document.writeln=function(){var s='';for(var i=0;i<arguments.length;i++)s+=arguments[i];s+='\\n';var c=patch(s);if(c)origWriteln(c);};" +
+                "  document.write=function(){var s='';for(var i=0;i<arguments.length;i++)s+=arguments[i];handleWrite(s);};" +
+                "  document.writeln=function(){var s='';for(var i=0;i<arguments.length;i++)s+=arguments[i];s+='\\n';handleWrite(s);};" +
                 "})()";
         view.evaluateJavascript(js, null);
     }
