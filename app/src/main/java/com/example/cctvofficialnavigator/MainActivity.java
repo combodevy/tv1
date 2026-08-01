@@ -889,12 +889,18 @@ public final class MainActivity extends Activity {
                     }
                 }
 
-                // JS 里通过 document.title 把诊断信息回传到 Java logcat
-                // 格式: "[DIAG] ..." 开头的就是诊断信息,直接打到 Log.i
+                // JS 里通过 document.title 把诊断信息回传到 Java:
+                // 格式: "[DIAG] ..." 开头的就是诊断信息
+                // 双路输出: 1) 打到 logcat; 2) 显示到屏幕右上角 progressHint,用户无需adb即可查看
                 @Override
                 public void onTitleChange(GeckoSession session, String title) {
                     if (title != null && title.startsWith("[DIAG]")) {
-                        Log.i("CCTV-TV", "JS诊断 → " + title);
+                        String diag = title.substring(7);
+                        Log.i("CCTV-TV", "JS诊断 → " + diag);
+                        // 显示到屏幕右上角(不自动消失,方便看;新的诊断会覆盖)
+                        handler.removeCallbacks(hideProgressHint);
+                        progressHint.setVisibility(View.VISIBLE);
+                        progressHint.setText("诊断: " + diag);
                     }
                 }
 
