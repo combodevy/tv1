@@ -9,7 +9,9 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
+import android.view.GestureDetector;
 import android.view.KeyEvent;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
@@ -64,6 +66,8 @@ public final class MainActivity extends Activity {
     private int channelIndex;
     private final Runnable hideChannelHint = () -> channelHint.setVisibility(View.GONE);
     private final Handler handler = new Handler(Looper.getMainLooper());
+    // 手势检测:上滑=下一个频道,下滑=上一个频道(手机触屏操作)
+    private GestureDetector gestureDetector;
     // 倒计时线程:用 background thread 跑,避免被 WebView 加载/JS 阻塞 main thread 导致 postDelayed 永不执行
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
     // 拦截到的 m3u8 URL(从 shouldInterceptRequest 捕获,用于 hls.js 兜底播放)
@@ -98,6 +102,27 @@ public final class MainActivity extends Activity {
         rootContainer = findViewById(R.id.root_container);
         webView.setBackgroundColor(Color.BLACK);
         channelIndex = savedInstanceState == null ? 0 : savedInstanceState.getInt(SAVED_CHANNEL_INDEX, 0);
+        // 初始化手势检测器:上滑=下一个频道,下滑=上一个频道
+        gestureDetector = new GestureDetector(this, new GestureDetector.SimpleOnGestureListener() {
+            private static final int SWIPE_THRESHOLD = 100;
+            private static final int SWIPE_VELOCITY_THRESHOLD = 100;
+            @Override
+            public boolean onFling(MotionEvent e1, MotionEvent e2, float velocityX, float velocityY) {
+                if (e1 == null || e2 == null) return false;
+                float diffY = e2.getY() - e1.getY();
+                if (Math.abs(diffY) > SWIPE_THRESHOLD && Math.abs(velocityY) > SWIPE_VELOCITY_THRESHOLD) {
+                    if (diffY < 0) {
+                        // 上滑 → 下一个频道
+                        loadChannel(channelIndex + 1);
+                    } else {
+                        // 下滑 → 上一个频道
+                        loadChannel(channelIndex - 1);
+                    }
+                    return true;
+                }
+                return false;
+            }
+        });
         configureWebView();
         enterImmersiveMode();
         loadChannel(channelIndex);
@@ -639,6 +664,8 @@ public final class MainActivity extends Activity {
         // 关键:在加载前切 UA
         //  CCTV-3/6/8 → 桌面 Chrome 126(否则服务器端跳空页)
         //  其他     → 系统默认移动 UA(桌面 UA 会让 CCTV-9 等频道黑屏)
+        // 注意:MuMu(x86)模拟器无硬件 H.264 解码器,桌面 UA 的 HLSP2P 播放器(MSE blob URL)无法解码,
+        // 所以 MuMu 上 CCTV-3/6/8 会有声音没画面。真实 ARM 电视盒子有硬件解码器,不受影响。
         WebSettings settings = webView.getSettings();
         if (needsDesktopUA(channel.officialUrl)) {
             settings.setUserAgentString(DESKTOP_UA);
@@ -789,6 +816,15 @@ public final class MainActivity extends Activity {
                 debugPanel.setVisibility(View.GONE);
             }
         });
+    }
+
+    @Override
+    public boolean dispatchTouchEvent(MotionEvent ev) {
+        // 手势检测优先:上滑/下滑切换频道
+        if (gestureDetector.onTouchEvent(ev)) {
+            return true;
+        }
+        return super.dispatchTouchEvent(ev);
     }
 
     @Override
