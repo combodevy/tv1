@@ -113,6 +113,17 @@ public final class MainActivity extends Activity {
         settings.setLoadWithOverviewMode(true);
         settings.setUseWideViewPort(true);
 
+        // CCTV 页面内部有 http/https 混合资源(如某些统计/广告),允许加载避免资源缺失
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
+        }
+
+        // 启用 WebView 硬件加速(默认开启,显式确保);MSE/blob URL 视频需要硬件合成
+        webView.setLayerType(View.LAYER_TYPE_HARDWARE, null);
+        // 允许在 file: 协议下访问内容(某些缓存/本地资源场景需要)
+        settings.setAllowFileAccess(true);
+        settings.setAllowContentAccess(true);
+
         // 用自定义的 WebChromeClient 拦截 console 输出和加载进度(CCTV 内部的 JS 报错能反映到 logcat/面板)
         webView.setWebChromeClient(new LoggingWebChromeClient(this));
         webView.setWebViewClient(new WebViewClient() {
@@ -375,9 +386,12 @@ public final class MainActivity extends Activity {
                 // video 元素(#h5player_player)是 JS 直接创建在主文档里的,不在 iframe 内。
                 "    'iframe{display:none!important}'+" +
                 // video 元素: 固定全屏 + 最高 z-index,确保在所有元素之上
-                "    'video{position:fixed!important;width:100vw!important;height:100vh!important;left:0!important;top:0!important;z-index:999999!important;object-fit:contain!important;background:#000!important}'+" +
+                // 加 transform/translateZ 强制触发 GPU 合成层,修复某些 WebView 上有声无画问题
+                "    'video{position:fixed!important;display:block!important;visibility:visible!important;opacity:1!important;width:100vw!important;height:100vh!important;min-width:100vw!important;min-height:100vh!important;left:0!important;top:0!important;z-index:999999!important;object-fit:contain!important;background:#000!important;transform:translateZ(0)!important;backface-visibility:hidden!important}'+" +
                 // #h5player_player 是 CCTV 播放器创建的 video 元素 ID
-                "    '#h5player_player{position:fixed!important;width:100vw!important;height:100vh!important;left:0!important;top:0!important;z-index:999999!important;object-fit:contain!important;background:#000!important}'+" +
+                "    '#h5player_player{position:fixed!important;display:block!important;visibility:visible!important;opacity:1!important;width:100vw!important;height:100vh!important;min-width:100vw!important;min-height:100vh!important;left:0!important;top:0!important;z-index:999999!important;object-fit:contain!important;background:#000!important;transform:translateZ(0)!important;backface-visibility:hidden!important}'+" +
+                // 播放器容器: 确保尺寸不为 0,overflow 不裁剪 video
+                "    '#player,#player_container,.video_box,.video_flash,.video_left{overflow:visible!important;width:100vw!important;height:100vh!important}'+",
                 // 装饰元素: 隐藏 (桌面版的顶部 CCTV 大导航栏也必须隐藏)
                 "    '.video_right,.video_btnBar,.bg_top_h_tile,.bg_top_owner,.bg_bottom_h_tile,header,footer,nav,.vspace,.column_wrapper,.nav,.topbar,.sitemap,.shares{display:none!important}';" +
                 "  function applyCss(){" +
@@ -432,10 +446,15 @@ public final class MainActivity extends Activity {
                 "        }" +
                 "      }catch(e){}" +
                 "      v.style.position='fixed';" +
+                "      v.style.display='block';" +
+                "      v.style.visibility='visible';" +
+                "      v.style.opacity='1';" +
                 "      v.style.left='0';" +
                 "      v.style.top='0';" +
                 "      v.style.width='100vw';" +
                 "      v.style.height='100vh';" +
+                "      v.style.minWidth='100vw';" +
+                "      v.style.minHeight='100vh';" +
                 "      v.style.zIndex='999999';" +
                 "      v.style.objectFit='contain';" +
                 "      v.style.background='#000';" +
@@ -453,6 +472,27 @@ public final class MainActivity extends Activity {
                 // 隐藏所有 iframe(广告等),确保不盖住 video
                 "    var ifs=document.querySelectorAll('iframe');" +
                 "    for(var i=0;i<ifs.length;i++){ifs[i].style.display='none';}" +
+                // 修复父容器可能裁剪/遮挡 video: 向上遍历所有父元素,强制 overflow:visible 且尺寸不为 0
+                "    if(v){" +
+                "      var node=v.parentNode;" +
+                "      while(node&&node!==document.body&&node!==document.documentElement){" +
+                "        node.style.overflow='visible';" +
+                "        node.style.width='100vw';" +
+                "        node.style.height='100vh';" +
+                "        node=node.parentNode;" +
+                "      }" +
+                "    }" +
+                // 隐藏所有可能盖住 video 的 z-index 极高的兄弟/遮罩层(广告弹窗等)
+                "    var all=document.querySelectorAll('*');" +
+                "    for(var i=0;i<all.length;i++){" +
+                "      var el=all[i];" +
+                "      if(el===v||el.contains(v)||v.contains(el))continue;" +
+                "      var rect=el.getBoundingClientRect();" +
+                "      if(rect.width>0&&rect.height>0){" +
+                "        var z=parseInt(window.getComputedStyle(el).zIndex)||0;" +
+                "        if(z>=999990){el.style.display='none';}" +
+                "      }" +
+                "    }" +
                 "  }" +
                 "  ForceFullscreen();" +
                 "  var count=0;" +
@@ -643,7 +683,14 @@ public final class MainActivity extends Activity {
                 "(function(){" +
                 "  var v=document.getElementById('h5player_player')||document.querySelector('video');" +
                 "  var m3u8=window.__cctvM3u8Url||'';" +
-                "  if(v){return 'OK:'+(v.paused?'PAUSED':'PLAYING')+' src='+(v.src||v.currentSrc||'none').substring(0,60)+'|M3U8='+m3u8;}" +
+                "  if(v){" +
+                "    var r=v.getBoundingClientRect();" +
+                "    var cs=window.getComputedStyle(v);" +
+                "    var diag='x='+Math.round(r.left)+' y='+Math.round(r.top)+' w='+Math.round(r.width)+' h='+Math.round(r.height)+" +
+                "             ' display='+cs.display+' visibility='+cs.visibility+' opacity='+cs.opacity+" +
+                "             ' zIndex='+cs.zIndex+' objectFit='+cs.objectFit+' muted='+v.muted+' paused='+v.paused;" +
+                "    return 'OK:'+(v.paused?'PAUSED':'PLAYING')+' src='+(v.src||v.currentSrc||'none').substring(0,60)+'|M3U8='+m3u8+'|'+diag;" +
+                "  }" +
                 "  var txt=(document.body&&document.body.innerText||'').replace(/\\s+/g,' ').trim();" +
                 "  var info=[];" +
                 "  info.push('M3U8='+m3u8);" +
