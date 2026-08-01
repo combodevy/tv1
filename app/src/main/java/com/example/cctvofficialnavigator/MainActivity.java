@@ -401,7 +401,22 @@ public final class MainActivity extends Activity {
                 "    var v=document.getElementById('h5player_player')||document.querySelector('video');" +
                 "    if(v){" +
                 "      try{v.volume=1;}catch(e){}" +
-                "      try{if(v.paused)v.play();}catch(e){}" +
+                // 自动播放策略修复:CCTV 的 HLSP2P 播放器创建了 video 元素并加载了流(960x540),
+                // 但因 muted=false + 自动播放策略,video.play() 被 reject,导致 paused=true → 黑屏。
+                // 修复:先 muted=true 触发 play(),播放成功后延迟 2 秒取消 muted 恢复声音。
+                // 用 __cctvAutoplayStarted 防止重复触发。
+                "      try{" +
+                "        if(v.paused&&!v.__cctvAutoplayStarted){" +
+                "          v.__cctvAutoplayStarted=true;" +
+                "          v.muted=true;" +
+                "          var p=v.play();" +
+                "          if(p&&p.then){" +
+                "            p.then(function(){setTimeout(function(){v.muted=false;},2000);}).catch(function(e){v.__cctvAutoplayStarted=false;});" +
+                "          }else{" +
+                "            setTimeout(function(){v.muted=false;},2000);" +
+                "          }" +
+                "        }" +
+                "      }catch(e){}" +
                 "      v.style.position='fixed';" +
                 "      v.style.left='0';" +
                 "      v.style.top='0';" +
@@ -671,8 +686,9 @@ public final class MainActivity extends Activity {
                     injectHlsPlayer(capturedM3u8Url);
                 }
             } else if (state.contains("PAUSED")) {
+                // video 元素存在但暂停 → 自动播放策略阻止。用 muted + play() 策略
                 webView.evaluateJavascript(
-                        "(function(){var v=document.getElementById('h5player_player')||document.querySelector('video');if(v){v.play();}return true;})()",
+                        "(function(){var v=document.getElementById('h5player_player')||document.querySelector('video');if(v&&!v.__cctvAutoplayStarted){v.__cctvAutoplayStarted=true;v.muted=true;var p=v.play();if(p&&p.then){p.then(function(){setTimeout(function(){v.muted=false;},2000);}).catch(function(e){v.__cctvAutoplayStarted=false;});}else{setTimeout(function(){v.muted=false;},2000);}}return true;})()",
                         null);
                 // 如果 10 秒后视频还是暂停的,说明 HLSP2P 播放器在 WebView 上跑不起来,
                 // 用 hls.js 兜底直接播放 m3u8
