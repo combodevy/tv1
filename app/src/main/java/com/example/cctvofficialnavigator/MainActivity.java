@@ -896,11 +896,15 @@ public final class MainActivity extends Activity {
                 @Override
                 public void onPageStart(GeckoSession session, String url) {
                     updateDebugPanel("GeckoView加载", shortenUrl(url));
+                    // 早期注入 CSS + 自动播放轮询(DOM 可能还没就绪,脚本内部用 DOMContentLoaded 兜底)
+                    injectGeckoAutoPlay();
                 }
 
                 @Override
                 public void onPageStop(GeckoSession session, boolean success) {
                     updateDebugPanel("GeckoView就绪", success ? "加载完成" : "加载失败");
+                    // 页面加载完再注入一次(防止 onPageStart 注入时 DOM 未就绪被丢弃)
+                    injectGeckoAutoPlay();
                 }
             });
 
@@ -926,6 +930,86 @@ public final class MainActivity extends Activity {
             Log.e("CCTV-TV", "GeckoView 初始化失败: " + e.getMessage(), e);
             geckoReady = false;
         }
+    }
+
+    /**
+     * 给 GeckoView 注入自动播放 + 全屏脚本(仅 CCTV-3/6/8)。
+     * GeckoView(Firefox 引擎)支持完整 HTML5 API:
+     *  - video.play() 自动播放(先用 muted 绕过自动播放策略,2秒后取消)
+     *  - element.requestFullscreen() 原生全屏(触发 onFullScreen 回调)
+     *  - CSS 强制 video 全屏作为兜底(即使 requestFullscreen 被拒)
+     * CCTV 桌面版的 video 元素是动态插入的(流连接后才有),需要轮询。
+     */
+    private void injectGeckoAutoPlay() {
+        if (geckoSession == null) return;
+        String js =
+                "(function(){" +
+                "  if(window.__cctvGeckoAutoPlay)return;" +
+                "  window.__cctvGeckoAutoPlay=true;" +
+                // CSS: 强制 video 全屏 + 隐藏装饰元素
+                "  function injectCss(){" +
+                "    if(document.getElementById('cctv-gv-style'))return;" +
+                "    var s=document.createElement('style');" +
+                "    s.id='cctv-gv-style';" +
+                "    s.textContent=" +
+                "      'html,body{width:100%!important;height:100%!important;margin:0!important;background:#000!important;overflow:hidden!important}'+" +
+                "      'video{position:fixed!important;display:block!important;visibility:visible!important;opacity:1!important;width:100vw!important;height:100vh!important;left:0!important;top:0!important;z-index:999999!important;object-fit:contain!important;background:#000!important}'+" +
+                "      '#h5player_player,#player,#player_container{position:fixed!important;width:100vw!important;height:100vh!important;left:0!important;top:0!important;z-index:999998!important}'+" +
+                "      'iframe{display:none!important}'+" +
+                "      '.video_right,.video_btnBar,.bg_top_h_tile,.bg_bottom_h_tile,header,footer,nav,.vspace,.column_wrapper,.topbar{display:none!important}';" +
+                "    (document.head||document.documentElement).appendChild(s);" +
+                "  }" +
+                // 轮询: 找到 video 就播放 + 全屏(200ms x 200 = 40秒)
+                "  var count=0;" +
+                "  function tick(){" +
+                "    injectCss();" +
+                "    var v=document.getElementById('h5player_player')||document.querySelector('video');" +
+                "    if(v){" +
+                // 自动播放: muted=true 先播,2秒后取消 muted 恢复声音
+                "      try{" +
+                "      if(v.paused&&!v.__gvAutoplay){" +
+                "        v.__gvAutoplay=true;" +
+                "        v.muted=true;" +
+                "        var p=v.play();" +
+                "        if(p&&p.then){" +
+                "          p.then(function(){setTimeout(function(){v.muted=false;},2000);}).catch(function(e){v.__gvAutoplay=false;});" +
+                "        } else {" +
+                "          setTimeout(function(){v.muted=false;},2000);" +
+                "        }" +
+                "      }" +
+                "      }catch(e){}" +
+                // 请求 HTML5 原生全屏(Firefox 用 requestFullscreen,兼容 webkitRequestFullscreen)
+                // 触发 GeckoView 的 onFullScreen(true) 回调,由 Java 层隐藏系统 UI
+                "      try{" +
+                "      if(!document.fullscreenElement&&!document.webkitFullscreenElement&&v.videoWidth>0&&!v.__gvFs){" +
+                "        v.__gvFs=true;" +
+                "        if(v.requestFullscreen){" +
+                "          v.requestFullscreen().then(function(){}).catch(function(){v.__gvFs=false;});" +
+                "        } else if(v.webkitRequestFullscreen){" +
+                "          v.webkitRequestFullscreen();" +
+                "        }" +
+                "      }" +
+                "      }catch(e){v.__gvFs=false;}" +
+                // CSS 兜底全屏(即使 requestFullscreen 被拒,视觉上也全屏)
+                "      v.style.position='fixed';" +
+                "      v.style.left='0';" +
+                "      v.style.top='0';" +
+                "      v.style.width='100vw';" +
+                "      v.style.height='100vh';" +
+                "      v.style.zIndex='999999';" +
+                "    }" +
+                "    count++;" +
+                "    if(count<200)setTimeout(tick,200);" +
+                "  }" +
+                // DOM 就绪后启动轮询(onPageStart 注入时 DOM 可能还没就绪)
+                "  if(document.readyState==='complete'||document.readyState==='interactive'){" +
+                "    tick();" +
+                "  } else {" +
+                "    document.addEventListener('DOMContentLoaded',tick);" +
+                "  }" +
+                "})()";
+        geckoSession.loadUri("javascript:" + js);
+        Log.i("CCTV-TV", "GeckoView 注入自动播放+全屏脚本");
     }
 
     /**
