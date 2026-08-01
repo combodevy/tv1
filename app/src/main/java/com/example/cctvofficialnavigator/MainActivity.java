@@ -577,9 +577,17 @@ public final class MainActivity extends Activity {
                 "      return origASB.call(this,fixed);" +
                 "    };" +
                 "  }" +
-                // 隐藏 CCTV 原播放器的 video(如果有)
-                "  var origV=document.getElementById('h5player_player');" +
-                "  if(origV)origV.style.display='none';" +
+                // 停止并隐藏 CCTV 原播放器的所有 video(避免和 hls.js 的音频重叠)
+                "  var allVideos=document.getElementsByTagName('video');" +
+                "  for(var i=0;i<allVideos.length;i++){" +
+                "    var ov=allVideos[i];" +
+                "    if(ov.id==='cctv-hls-player')continue;" +
+                "    try{ov.pause();ov.muted=true;ov.volume=0;}catch(e){}" +
+                "    ov.style.display='none';" +
+                "  }" +
+                // 尝试 stop/destroy HLSP2P 播放器对象,释放 P2P 资源
+                "  try{if(typeof playerObj!=='undefined'&&playerObj){if(playerObj.stop)playerObj.stop();if(playerObj.destroy)playerObj.destroy();}}catch(e){}" +
+                "  try{if(typeof cntvPlayer!=='undefined'&&cntvPlayer){if(cntvPlayer.stop)cntvPlayer.stop();if(cntvPlayer.destroy)cntvPlayer.destroy();}}catch(e){}" +
                 // 创建我们的 video 元素
                 "  var video=document.createElement('video');" +
                 "  video.id='cctv-hls-player';" +
@@ -736,8 +744,17 @@ public final class MainActivity extends Activity {
                 "    var cs=window.getComputedStyle(v);" +
                 "    var diag='x='+Math.round(r.left)+' y='+Math.round(r.top)+' w='+Math.round(r.width)+' h='+Math.round(r.height)+" +
                 "             ' display='+cs.display+' visibility='+cs.visibility+' opacity='+cs.opacity+" +
-                "             ' zIndex='+cs.zIndex+' objectFit='+cs.objectFit+' muted='+v.muted+' paused='+v.paused;" +
-                "    return 'OK:'+(v.paused?'PAUSED':'PLAYING')+' src='+(v.src||v.currentSrc||'none').substring(0,60)+'|M3U8='+m3u8+'|'+diag;" +
+                "             ' zIndex='+cs.zIndex+' objectFit='+cs.objectFit+' muted='+v.muted+' paused='+v.paused+" +
+                "             ' vw='+v.videoWidth+' vh='+v.videoHeight;" +
+                "    var st=v.paused?'PAUSED':((v.videoWidth===0||v.videoHeight===0)?'BLACK_SCREEN':'PLAYING');" +
+                "    return 'OK:'+st+' src='+(v.src||v.currentSrc||'none').substring(0,60)+'|M3U8='+m3u8+'|'+diag;" +
+                "  }" +
+                "  var allVideos=document.querySelectorAll('video');" +
+                "  var videoInfo=[];" +
+                "  for(var i=0;i<allVideos.length;i++){" +
+                "    var vv=allVideos[i];" +
+                "    var rr=vv.getBoundingClientRect();" +
+                "    videoInfo.push('video['+i+'] id='+vv.id+' w='+Math.round(rr.width)+' h='+Math.round(rr.height)+' paused='+vv.paused+' src='+(vv.src||vv.currentSrc||'none').substring(0,40));" +
                 "  }" +
                 "  var txt=(document.body&&document.body.innerText||'').replace(/\\s+/g,' ').trim();" +
                 "  var info=[];" +
@@ -797,6 +814,15 @@ public final class MainActivity extends Activity {
                 if (elapsedMs >= 10000 && capturedM3u8Url != null && !hlsPlayerInjected) {
                     hlsPlayerInjected = true;
                     updateDebugPanel("HLS_FALLBACK", "无video元素,切换hls.js直连\nm3u8=" + shortenUrl(capturedM3u8Url));
+                    injectHlsPlayer(capturedM3u8Url);
+                }
+            } else if (state.contains("BLACK_SCREEN")) {
+                // 有声音无画面:HLSP2P 的 P2P 视频失败,音频正常
+                Log.w("CCTV-TV", "=== 有声音无画面(" + elapsedMs + "ms) ===\n" + state);
+                updateDebugPanel("BLACK_SCREEN", "有声音无画面:HLSP2P的P2P视频失败\n正在切换hls.js兜底...");
+                if (elapsedMs >= 10000 && capturedM3u8Url != null && !hlsPlayerInjected) {
+                    hlsPlayerInjected = true;
+                    updateDebugPanel("HLS_FALLBACK", "有声音无画面,切换hls.js直连\nm3u8=" + shortenUrl(capturedM3u8Url));
                     injectHlsPlayer(capturedM3u8Url);
                 }
             } else if (state.contains("PAUSED")) {
