@@ -872,18 +872,42 @@ public final class MainActivity extends Activity {
             geckoSession.getSettings().setUserAgentOverride(DESKTOP_UA);
             geckoSession.getSettings().setAllowJavascript(true);
 
-            // Content delegate: 处理全屏 + 页面标题
+            // GeckoView 全尺寸 + 移除动态工具栏高度(防止挤压内容区域)
+            geckoView.setDynamicToolbarMaxHeight(0);
+            // Session 设置: DISPLAY_MODE_FULLSCREEN 告诉 GeckoView 这是全屏应用模式
+            // 影响 Gecko 引擎内部的 viewport 和 滚动条行为
+            geckoSession.getSettings().setDisplayMode(GeckoSessionSettings.DISPLAY_MODE_FULLSCREEN);
+            geckoSession.getSettings().setSuspendMediaWhenInactive(false);
+
+            // Content delegate: 处理全屏 + 页面标题(带诊断回传)
             geckoSession.setContentDelegate(new GeckoSession.ContentDelegate() {
                 @Override
                 public void onFullScreen(GeckoSession session, boolean fullScreen) {
-                    Log.i("CCTV-TV", "GeckoView 全屏: " + fullScreen);
+                    Log.i("CCTV-TV", "GeckoView HTML5 全屏回调: " + fullScreen);
                     if (fullScreen) {
                         enterImmersiveMode();
                     }
                 }
 
+                // JS 里通过 document.title 把诊断信息回传到 Java logcat
+                // 格式: "[DIAG] ..." 开头的就是诊断信息,直接打到 Log.i
                 @Override
                 public void onTitleChange(GeckoSession session, String title) {
+                    if (title != null && title.startsWith("[DIAG]")) {
+                        Log.i("CCTV-TV", "JS诊断 → " + title);
+                    }
+                }
+
+                @Override
+                public void onFirstComposite(GeckoSession session) {
+                    Log.i("CCTV-TV", "GeckoView onFirstComposite → 触发注入");
+                    scheduleGeckoAutoPlay();
+                }
+
+                @Override
+                public void onFirstContentfulPaint(GeckoSession session) {
+                    Log.i("CCTV-TV", "GeckoView onFirstContentfulPaint → 触发注入");
+                    scheduleGeckoAutoPlay();
                 }
 
                 @Override
@@ -896,13 +920,13 @@ public final class MainActivity extends Activity {
                 @Override
                 public void onPageStart(GeckoSession session, String url) {
                     updateDebugPanel("GeckoView加载", shortenUrl(url));
+                    Log.i("CCTV-TV", "GeckoView onPageStart → " + url);
                 }
 
                 @Override
                 public void onPageStop(GeckoSession session, boolean success) {
                     updateDebugPanel("GeckoView就绪", success ? "加载完成" : "加载失败");
-                    // 页面加载完后用 Java Handler 多次延迟注入(CCTV 的 video 元素是动态插入的,
-                    // 用 Java 层轮询比 JS setTimeout 更可靠,不受页面 JS 阻塞影响)
+                    Log.i("CCTV-TV", "GeckoView onPageStop → success=" + success + ", 触发注入");
                     scheduleGeckoAutoPlay();
                 }
             });
@@ -950,55 +974,90 @@ public final class MainActivity extends Activity {
     /**
      * 给 GeckoView 注入自动播放+全屏脚本(仅 CCTV-3/6/8)。
      *
-     * 三件事(每次调用都执行,用 JS 内部标志防重复):
-     *  1. CSS: 只隐藏装饰元素(导航栏/广告/iframe),不碰播放器容器和 video 的任何尺寸/位置
-     *     (之前强制 #player width/height 100% 导致容器被拉大但 video 没跟着放大 → 视频区域黑屏)
-     *  2. 自动播放: video.muted=true + play(),2秒后取消 muted 恢复声音
-     *  3. 点击 CCTV 全屏按钮: #player_fullscreen_no_player(img 元素,用户提供的实际 DOM 结构)
-     *     点击后 CCTV 播放器自己切换到网页全屏布局(CSS 放大,非 HTML5 Fullscreen API,不会黑屏)
+     * 关键改动(2026-08-01 针对用户反馈"顶部导航栏+分类栏还在+视频区域黑屏"):
+     *  1. CSS 暴力隐藏: 直接用 body>*:not(...) 把非播放器的所有元素隐藏,
+     *     不再用逐个 class 选择器(之前的选择器匹配不到 CCTv 新版 DOM)。
+     *     用 !important 提高优先级。
+     *  2. document.title 诊断回传: 每个关键步骤都把结果写入 document.title,
+     *     Java 层通过 onTitleChange 捕获并打到 logcat。用这个机制确认 JS 注入是否执行。
+     *  3. 每步用 try/catch 防止局部错误导致后续代码不执行。
      */
     private void injectGeckoAutoPlay() {
         if (geckoSession == null) return;
         String js =
                 "(function(){" +
-                // 1. CSS: 只隐藏装饰,绝不碰播放器容器和 video 的尺寸/位置
-                "  if(!document.getElementById('cctv-gv-style')){" +
-                "    var s=document.createElement('style');" +
-                "    s.id='cctv-gv-style';" +
-                "    s.textContent=" +
-                "      '.video_right,.video_btnBar,.bg_top_h_tile,.bg_bottom_h_tile,header,footer,nav,.vspace,.column_wrapper,.topbar,.sitemap,.shares{display:none!important}'+" +
-                "      'iframe{display:none!important}';" +
-                "    (document.head||document.documentElement).appendChild(s);" +
-                "  }" +
-                // 2. 自动播放: 找到 video,muted+play+延迟取消 muted
-                "  var v=document.querySelector('video');" +
-                "  if(v){" +
-                "    try{" +
-                "    if(v.paused&&!v.__gvAp){" +
-                "      v.__gvAp=true;" +
-                "      v.muted=true;" +
-                "      var p=v.play();" +
-                "      if(p&&p.then){" +
-                "        p.then(function(){setTimeout(function(){v.muted=false;},2000);}).catch(function(e){v.__gvAp=false;});" +
-                "      } else {" +
-                "        setTimeout(function(){v.muted=false;},2000);" +
-                "      }" +
-                "    }" +
-                "    }catch(e){}" +
-                "  }" +
-                // 3. 点击 CCTV 网页全屏按钮(用户提供的实际 DOM: img#player_fullscreen_no_player)
-                //    点击后 CCTV 播放器自己处理全屏布局,不干扰 GeckoView 渲染
                 "  try{" +
-                "  var fs=document.querySelector('#player_fullscreen_no_player');" +
-                "  if(fs&&!fs.__gvClicked){" +
-                "    fs.__gvClicked=true;" +
-                "    fs.click();" +
-                "    console.log('[CCTV-GV] clicked #player_fullscreen_no_player');" +
+                // 诊断: 写入 title,Java 层 onTitleChange 捕获
+                "    var r=[];" +
+                "    r.push('JS注入OK');" +
+                // 1. 暴力 CSS: 隐藏 body 下所有非播放器元素,隐藏导航/广告/iframe
+                "    if(!document.getElementById('cctv-gv-style')){" +
+                "      var s=document.createElement('style');" +
+                "      s.id='cctv-gv-style';" +
+                "      s.textContent=" +
+                "        'html,body{width:100%!important;height:100%!important;margin:0!important;padding:0!important;background:#000!important;overflow:hidden!important}'+" +
+                "        'body>*{display:none!important}'+" +
+                "        'body>#player,body>#player_container,body>#h5player_player,body>#m_CmContentPlayer,body>#CMVideoPlayer,body>div:first-child{display:block!important}'+" +
+                "        '#player,#player_container,#h5player_player,.video_box,.video_flash,.video_left,.video_main,#CMVideoPlayer{display:block!important;width:100%!important;height:100%!important;margin:0!important;padding:0!important;position:fixed!important;left:0!important;top:0!important;z-index:1!important;background:#000!important}'+" +
+                "        'video{display:block!important;width:100vw!important;height:100vh!important;margin:0!important;padding:0!important;position:fixed!important;left:0!important;top:0!important;z-index:999999!important;background:#000!important;object-fit:contain!important}'+" +
+                "        'iframe:not([id*=player]):not([src*=player]):not([src*=live]),header,nav,footer,.nav,.nav_wrap,.topnav,.sitemap,.shares,.topbar,.column_wrapper,.bg_top_h_tile,.bg_bottom_h_tile,.video_right,.video_btnBar,.vspace{display:none!important;visibility:hidden!important;height:0!important;width:0!important;overflow:hidden!important}';" +
+                "      (document.head||document.documentElement).appendChild(s);" +
+                "      r.push('CSS已注入');" +
+                "    } else { r.push('CSS已存在'); }" +
+                // 2. 诊断: video 元素状态
+                "    var v=document.querySelector('video');" +
+                "    r.push(v?'找到video':'未找到video');" +
+                // 3. 自动播放
+                "    if(v){" +
+                "      r.push('video状态:paused='+v.paused+',muted='+v.muted+',readyState='+v.readyState+',videoWidth='+v.videoWidth);" +
+                "      if(v.paused&&!v.__gvAp){" +
+                "        v.__gvAp=true;" +
+                "        v.muted=true;" +
+                "        try{" +
+                "          var p=v.play();" +
+                "          if(p&&p.then){" +
+                "            p.then(function(){r.push('play()成功');setTimeout(function(){v.muted=false;r.push('取消muted');document.title='[DIAG] '+r.join(' | ');},2000);}).catch(function(e){v.__gvAp=false;r.push('play失败:'+e.message);});" +
+                "          } else {" +
+                "            r.push('play()已执行(非Promise)');setTimeout(function(){v.muted=false;r.push('取消muted');document.title='[DIAG] '+r.join(' | ');},2000);" +
+                "          }" +
+                "        }catch(e){ r.push('play异常:'+e.message); v.__gvAp=false; }" +
+                "      }" +
+                // 4. CSS 兜底: video 强制显示和定位
+                "      try{" +
+                "        v.style.setProperty('display','block','important');" +
+                "        v.style.setProperty('position','fixed','important');" +
+                "        v.style.setProperty('left','0','important');" +
+                "        v.style.setProperty('top','0','important');" +
+                "        v.style.setProperty('width','100vw','important');" +
+                "        v.style.setProperty('height','100vh','important');" +
+                "        v.style.setProperty('z-index','999999','important');" +
+                "        v.style.setProperty('visibility','visible','important');" +
+                "        v.style.setProperty('opacity','1','important');" +
+                "      }catch(e2){ r.push('video CSS异常:'+e2.message); }" +
+                "    }" +
+                // 5. 点击 CCTV 网页全屏按钮(所有可能选择器都试一下)
+                "    var btn=null;" +
+                "    var allSelectors=['#player_fullscreen_no_player','#player_pagefullscreen_yes_player','.videoFull','.fs_btn','[id*=fullscreen][id*=no]','[id*=fullscreen][id*=yes]'];" +
+                "    for(var i=0;i<allSelectors.length;i++){" +
+                "      try{ var el=document.querySelector(allSelectors[i]); if(el){btn=el;r.push('全屏按钮:'+allSelectors[i]);break;} }catch(e3){}" +
+                "    }" +
+                "    if(!btn){ r.push('未找到全屏按钮'); }" +
+                "    if(btn&&!btn.__gvClicked){" +
+                "      btn.__gvClicked=true;" +
+                "      try{" +
+                "        btn.click();" +
+                "        r.push('全屏按钮已点击');" +
+                "      }catch(e4){ r.push('点击全屏异常:'+e4.message); }" +
+                "    }" +
+                // 最终: 诊断写入 document.title
+                "    document.title='[DIAG] '+r.join(' | ');" +
+                "  }catch(e5){" +
+                "    try{ document.title='[DIAG] JS顶层异常:'+e5.message; }catch(z){}" +
                 "  }" +
-                "  }catch(e){}" +
                 "})()";
+        // 重要: javascript: 后面不空格,直接接编码后的脚本
         geckoSession.loadUri("javascript:" + js);
-        Log.i("CCTV-TV", "GeckoView 注入自动播放+全屏");
+        Log.i("CCTV-TV", "GeckoView 注入自动播放+全屏(暴力CSS+诊断回传)");
     }
 
     /**
