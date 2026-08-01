@@ -1016,7 +1016,10 @@ public final class MainActivity extends Activity {
                 // ========== 第2部分:60秒长期轮询 ==========
                 "  if(!window.__cctvGvLoop){" +
                 "    window.__cctvGvLoop=true;" +
-                "    var cnt=0,maxTick=600,diag='启动';var apDone=false,fsDone=false,unmuteSet=false;" +
+                "    var cnt=0,maxTick=600,diag='启动';var apDone=false,fsDone=false,unmuteSet=false,redirected=false;" +
+                // 判断当前是否已经在播放器页面(URL包含播放器关键字,不用再跳转)
+                "    var curUrl=(location.hostname+location.pathname).toLowerCase();" +
+                "    var isPlayerPage=/player\\.|cntv\\.cn|ysp\\.cn|h5player|liveplayer/.test(curUrl);" +
                 "    function diagPush(v,diags){" +
                 "      if(!v){diags.push('未找到video');return;}" +
                 "      diags.push('v:p='+v.paused+',m='+v.muted+',rs='+v.readyState+',vw='+v.videoWidth+',vh='+v.videoHeight);" +
@@ -1025,6 +1028,25 @@ public final class MainActivity extends Activity {
                 "      try{" +
                 "        cnt++;" +
                 "        var diags=[];" +
+                // 0) 如果不在播放器页面,找iframe跳转播放器页
+                "        if(!isPlayerPage&&!redirected){" +
+                "          var ifs=document.querySelectorAll('iframe');" +
+                "          var targetIframe=null;" +
+                "          for(var i=0;i<ifs.length;i++){" +
+                "            var s=ifs[i].src;" +
+                "            if(s&&/player\\.|cntv\\.cn|ysp\\.cn|h5player|liveplayer|video|live/i.test(s)){" +
+                "              targetIframe=s;break;" +
+                "            }" +
+                "          }" +
+                "          if(targetIframe){" +
+                "            redirected=true;" +
+                "            diags.push('跳播放器页:'+targetIframe.substring(0,60));" +
+                "            try{ document.title='[DIAG] 跳:'+targetIframe.substring(0,40);}catch(_){}" +
+                "            clearInterval(loopTimer);" +
+                "            location.replace(targetIframe);" +
+                "            return;" +
+                "          } else { diags.push('等iframe('+ifs.length+')'); }" +
+                "        }" +
                 // a) 找 video
                 "        var v=document.querySelector('video');" +
                 "        if(v){" +
