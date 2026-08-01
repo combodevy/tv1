@@ -170,6 +170,8 @@ public final class MainActivity extends Activity {
 
     @SuppressLint("SetJavaScriptEnabled")
     private void configureWebView() {
+        // 开启 WebView 远程调试:手机 Chrome 地址栏输入 chrome://inspect 可远程连接查看 console/DOM/网络
+        WebView.setWebContentsDebuggingEnabled(true);
         WebSettings settings = webView.getSettings();
         settings.setJavaScriptEnabled(true);
         settings.setDomStorageEnabled(true);
@@ -224,6 +226,10 @@ public final class MainActivity extends Activity {
                     view.loadUrl(cur.officialUrl, headers);
                     return; // 不要跑下面的 CSS/补丁注入,等重新 load 的 onPageStarted
                 }
+                // 0) 最最早期:浏览器环境伪装(必须在所有其他注入之前)
+                //    WebView 原生没有 window.chrome,CCTV 播放器检测到缺失就激活 video_protect(只放声音不放画面)
+                //    必须比 injectDocumentWritePatch/injectM3u8Capture/injectFastLoading/injectAutoFullscreen 都早
+                injectBrowserEnvironment(view, needsDesktopUA(url));
                 // 1) 最早期:document.write polyfill(必须在任何页面 JS 之前注入,否则晚了)
                 //    Chromium 53+ 起对"parser-blocking + cross-site + document.write 插入的<script>"
                 //    在 2G/慢网下直接不执行(2G Intervention)。CCTV 的播放器启动链里有用
@@ -310,6 +316,61 @@ public final class MainActivity extends Activity {
         // 百度统计/广告 SDK 域名错误
         if (m.contains("bdns") || m.contains("bdydns")) return true;
         return false;
+    }
+
+    /**
+     * 浏览器环境伪装(核心修复"有声音无画面"):
+     *  ① 注入 window.chrome 对象 — WebView 原生没有,CCTV 播放器检测缺失后激活 video_protect(纯音频模式)
+     *  ② 桌面 UA 频道覆盖 navigator.platform → "Win32" — UA 说 Windows 但 platform 还是 Linux,不一致会降级
+     *  ③ 覆盖 navigator.webdriver → false — 防止被检测为自动化测试工具
+     *  ④ 覆盖 navigator.vendor → "Google Inc." + 添加 navigator.userAgentData(Client Hints)
+     *  ⑤ 覆盖 MediaSource.isTypeSupported() 对视频 codec 一律返回 true + 修复 addSourceBuffer codec
+     *    WebView 可能对某些 H.264 profile 返回 false,导致播放器认为不支持视频降级为纯音频
+     */
+    private void injectBrowserEnvironment(WebView view, boolean isDesktopUA) {
+        String platform = isDesktopUA ? "Win32" : "Linux armv8l";
+        String uaDataPlatform = isDesktopUA ? "Windows" : "Android";
+        String uaDataMobile = isDesktopUA ? "false" : "true";
+        String js =
+                "(function(){" +
+                "  if(window.__cctvEnvPatched)return;" +
+                "  window.__cctvEnvPatched=true;" +
+                // ① 注入 window.chrome 对象(最关键)
+                "  if(!window.chrome){" +
+                "    window.chrome={};" +
+                "    window.chrome.runtime={};" +
+                "    window.chrome.app={isInstalled:false};" +
+                "    window.chrome.csi=function(){return{}};" +
+                "    window.chrome.loadTimes=function(){return{}};" +
+                "  }" +
+                // ② 覆盖 navigator.platform
+                "  try{Object.defineProperty(navigator,'platform',{get:function(){return '" + platform + "';},configurable:true});}catch(e){}" +
+                // ③ 覆盖 navigator.webdriver → false
+                "  try{Object.defineProperty(navigator,'webdriver',{get:function(){return false;},configurable:true});}catch(e){}" +
+                // ④ 覆盖 navigator.vendor + 添加 navigator.userAgentData
+                "  try{Object.defineProperty(navigator,'vendor',{get:function(){return 'Google Inc.';},configurable:true});}catch(e){}" +
+                "  try{if(!navigator.userAgentData){" +
+                "    Object.defineProperty(navigator,'userData',{get:function(){return undefined;},configurable:true});" +
+                "    Object.defineProperty(navigator,'userAgentData',{" +
+                "      get:function(){return {brands:[{brand:'Chromium',version:'126'},{brand:'Google Chrome',version:'126'}],mobile:" + uaDataMobile + ",platform:'" + uaDataPlatform + "'};" +
+                "      },configurable:true" +
+                "    });" +
+                "  }}catch(e){}" +
+                // ⑤ 覆盖 MediaSource.isTypeSupported() + 修复 addSourceBuffer codec
+                "  if(window.MediaSource){" +
+                "    var origITS=MediaSource.isTypeSupported.bind(MediaSource);" +
+                "    MediaSource.isTypeSupported=function(type){" +
+                "      if(/video/i.test(type)&&/avc1|hvc1|hev1|mp4|webm/i.test(type))return true;" +
+                "      return origITS(type);" +
+                "    };" +
+                "    var origASB=MediaSource.prototype.addSourceBuffer;" +
+                "    MediaSource.prototype.addSourceBuffer=function(type){" +
+                "      var fixed=String(type).replace(/avc1\\.64[0-9a-fA-F]{4}/g,'avc1.640028');" +
+                "      return origASB.call(this,fixed);" +
+                "    };" +
+                "  }" +
+                "})()";
+        view.evaluateJavascript(js, null);
     }
 
     /**
@@ -597,7 +658,7 @@ public final class MainActivity extends Activity {
                 "        }" +
                 "      }" +
                 "    }catch(e){}" +
-                "    try{if(v.webkitRequestFullscreen&&!v.__cctvFsRequested){v.__cctvFsRequested=true;v.webkitRequestFullscreen();}}catch(e){}" +
+                "    try{if(v.webkitRequestFullscreen&&!v.__cctvFsRequested&&v.videoWidth>0){v.__cctvFsRequested=true;v.webkitRequestFullscreen();}}catch(e){}" +
                 "    v.style.position='fixed';" +
                 "      v.style.display='block';" +
                 "      v.style.visibility='visible';" +
