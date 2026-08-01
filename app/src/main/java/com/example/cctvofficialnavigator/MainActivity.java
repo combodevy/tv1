@@ -372,11 +372,12 @@ public final class MainActivity extends Activity {
     }
 
     /**
-     * hook XMLHttpRequest,捕获 m3u8 URL。
-     * HLSP2P 的 m3u8 请求在 Web Worker 里发(shouldInterceptRequest 可能拦不到),
-     * 但 VDN API(返回 m3u8 URL 的接口)是从主线程发的 XHR。
-     * VDN 响应 JSON 的 streamUrl 字段包含 m3u8 URL,用正则提取存到 window.__cctvM3u8Url。
-     * 白屏检测时如果 shouldInterceptRequest 没拦到,会从 window.__cctvM3u8Url 获取。
+     * 三路捕获 m3u8 URL(黑屏兜底的关键前置):
+     *  1) XHR:hook open 记 URL,hook send 后用 onload + addEventListener('load'/'readystatechange') 三重拦截
+     *     (原来只 hook onreadystatechange,但 liveplayer.js 用 onload,VDN 返回的 m3u8 从来没被捕获)
+     *  2) fetch:拦截 VDN fetch 的 json()/text() 响应,从 body 中正则提取 m3u8
+     *  3) livePlayerObjs 轮询:每 500ms 从播放器对象内部直接读 m3u8 URL(兜底兜底)
+     * VDN URL 匹配从 'vdn/live' 扩大为 'vdn'(覆盖 vdnx/vdnxbk/vdn 三个端点)。
      */
     private void injectM3u8Capture(WebView view) {
         String js =
@@ -384,6 +385,19 @@ public final class MainActivity extends Activity {
                 "  if(window.__cctvM3u8Hook)return;" +
                 "  window.__cctvM3u8Hook=true;" +
                 "  window.__cctvM3u8Url=null;" +
+                // ---- 工具函数:从任意文本中提取 m3u8 URL ----
+                "  function extractM3u8(text){" +
+                "    if(!text||typeof text!=='string')return null;" +
+                "    var m=text.match(/https?:\\/\\/[^\\s\"'<>|]+\\.m3u8[^\\s\"'<>|]*/);" +
+                "    return m?m[0]:null;" +
+                "  }" +
+                "  function saveM3u8(url,source){" +
+                "    if(url&&!window.__cctvM3u8Url){" +
+                "      window.__cctvM3u8Url=url;" +
+                "      console.log('[CCTV-M3U8] '+source+': '+url);" +
+                "    }" +
+                "  }" +
+                // ---- 1) XHR hook ----
                 "  var origOpen=XMLHttpRequest.prototype.open;" +
                 "  var origSend=XMLHttpRequest.prototype.send;" +
                 "  XMLHttpRequest.prototype.open=function(method,url){" +
@@ -394,39 +408,100 @@ public final class MainActivity extends Activity {
                 "    var self=this;" +
                 "    var reqUrl=self.__cctvReqUrl||'';" +
                 // 直接拦截 m3u8 请求(主线程发的)
-                "    if(reqUrl.indexOf('.m3u8')>=0&&!window.__cctvM3u8Url){" +
-                "      window.__cctvM3u8Url=reqUrl;" +
-                "      console.log('[CCTV-M3U8] captured from XHR: '+reqUrl);" +
+                "    if(reqUrl.indexOf('.m3u8')>=0){" +
+                "      saveM3u8(reqUrl,'XHR direct');" +
                 "    }" +
-                // 拦截 VDN API 响应,从 JSON 中提取 m3u8 URL
-                "    if(reqUrl.indexOf('vdn/live')>=0||reqUrl.indexOf('getstream')>=0){" +
+                // VDN API 响应拦截(扩大匹配:vdn 覆盖 vdnx/vdnxbk/vdn)
+                "    var isVdn=reqUrl.indexOf('vdn')>=0||reqUrl.indexOf('getstream')>=0;" +
+                "    if(isVdn){" +
+                // 三重拦截:onload + addEventListener('load') + addEventListener('readystatechange')
+                // (liveplayer.js 用 onload,不用 onreadystatechange,原来只 hook onreadystatechange 导致漏捕)
+                "      var origOnload=self.onload;" +
+                "      self.onload=function(){" +
+                "        var m=extractM3u8(self.responseText);" +
+                "        if(m)saveM3u8(m,'XHR onload');" +
+                "        if(origOnload)return origOnload.apply(self,arguments);" +
+                "      };" +
+                "      self.addEventListener('load',function(){" +
+                "        var m=extractM3u8(self.responseText);" +
+                "        if(m)saveM3u8(m,'XHR load evt');" +
+                "      });" +
+                "      self.addEventListener('readystatechange',function(){" +
+                "        if(self.readyState===4){" +
+                "          var m=extractM3u8(self.responseText);" +
+                "          if(m)saveM3u8(m,'XHR rsc evt');" +
+                "        }" +
+                "      });" +
+                // 保留原来的 onreadystatechange hook(兼容直接赋值的写法)
                 "      var origRSC=self.onreadystatechange;" +
                 "      self.onreadystatechange=function(){" +
-                "        if(self.readyState===4&&self.responseText&&!window.__cctvM3u8Url){" +
-                "          try{" +
-                "            var m=self.responseText.match(/https?:\\/\\/[^\\s\"'<>]+\\.m3u8[^\\s\"'<>]*/);" +
-                "            if(m){" +
-                "              window.__cctvM3u8Url=m[0];" +
-                "              console.log('[CCTV-M3U8] captured from VDN API: '+m[0]);" +
-                "            }" +
-                "          }catch(e){}" +
+                "        if(self.readyState===4){" +
+                "          var m=extractM3u8(self.responseText);" +
+                "          if(m)saveM3u8(m,'XHR rsc hook');" +
                 "        }" +
                 "        if(origRSC)return origRSC.apply(self,arguments);" +
                 "      };" +
                 "    }" +
-                "    return origSend.apply(this,arguments);" +
+                "    return origSend.apply(self,arguments);" +
                 "  };" +
-                // 也 hook fetch(部分新版播放器可能用 fetch 而非 XHR)
+                // ---- 2) fetch hook ----
                 "  if(window.fetch){" +
                 "    var origFetch=window.fetch;" +
                 "    window.fetch=function(input,init){" +
                 "      var url=typeof input==='string'?input:(input&&input.url||'');" +
-                "      if(url.indexOf('.m3u8')>=0&&!window.__cctvM3u8Url){" +
-                "        window.__cctvM3u8Url=url;" +
-                "        console.log('[CCTV-M3U8] captured from fetch: '+url);" +
+                "      if(url.indexOf('.m3u8')>=0)saveM3u8(url,'fetch direct');" +
+                // VDN fetch:拦截 response.json()/text()
+                "      var isVdn=url.indexOf('vdn')>=0||url.indexOf('getstream')>=0;" +
+                "      if(isVdn){" +
+                "        return origFetch.apply(this,arguments).then(function(resp){" +
+                "          var origJson=resp.json.bind(resp);" +
+                "          var origText=resp.text.bind(resp);" +
+                "          resp.json=function(){return origJson().then(function(data){" +
+                "            var m=extractM3u8(JSON.stringify(data));" +
+                "            if(m)saveM3u8(m,'fetch json');" +
+                "            return data;" +
+                "          });};" +
+                "          resp.text=function(){return origText().then(function(text){" +
+                "            var m=extractM3u8(text);" +
+                "            if(m)saveM3u8(m,'fetch text');" +
+                "            return text;" +
+                "          });};" +
+                "          return resp;" +
+                "        });" +
                 "      }" +
                 "      return origFetch.apply(this,arguments);" +
                 "    };" +
+                "  }" +
+                // ---- 3) livePlayerObjs 轮询:每 500ms 从播放器对象内部读 m3u8 ----
+                "  if(!window.__cctvPlayerPoll){" +
+                "    window.__cctvPlayerPoll=true;" +
+                "    function pollPlayerObjs(){" +
+                "      if(window.__cctvM3u8Url){return;}" +
+                // 遍历已知的播放器全局对象
+                "      var objs=[window.playerObj,window.cntvPlayer,window.liveplayer,window.livePlayer,window.HLSP2P];" +
+                "      for(var i=0;i<objs.length;i++){" +
+                "        var o=objs[i];" +
+                "        if(!o)continue;" +
+                "        var m3u8=o.m3u8||o.m3u8Url||o.streamUrl||o.url||o.src||" +
+                "                 (o.options&&o.options.m3u8)||(o.config&&o.config.m3u8);" +
+                "        if(m3u8&&typeof m3u8==='string'&&m3u8.indexOf('.m3u8')>=0){" +
+                "          saveM3u8(m3u8,'playerObj poll');" +
+                "          return;" +
+                "        }" +
+                // 深度遍历一层属性
+                "        for(var k in o){" +
+                "          try{" +
+                "            var v=o[k];" +
+                "            if(typeof v==='string'&&v.indexOf('.m3u8')>=0){" +
+                "              saveM3u8(v,'playerObj.'+k);" +
+                "              return;" +
+                "            }" +
+                "          }catch(e){}" +
+                "        }" +
+                "      }" +
+                "      setTimeout(pollPlayerObjs,500);" +
+                "    }" +
+                "    setTimeout(pollPlayerObjs,500);" +
                 "  }" +
                 "})()";
         view.evaluateJavascript(js, null);
@@ -758,7 +833,7 @@ public final class MainActivity extends Activity {
         for (ScheduledFuture<?> f : pendingChecks) f.cancel(false);
         pendingChecks.clear();
         final int gen = loadGeneration;
-        long[] delays = {5000L, 10000L, 15000L, 20000L, 30000L};
+        long[] delays = {3000L, 5000L, 8000L, 12000L, 20000L};
         for (long delay : delays) {
             ScheduledFuture<?> future = scheduler.schedule(() -> {
                 if (gen != loadGeneration) return;
@@ -841,8 +916,17 @@ public final class MainActivity extends Activity {
                     int start = m3u8Idx + 5;
                     int end = state.indexOf("\n", start);
                     if (end < 0) end = state.indexOf("\\n", start);
+                    if (end < 0) end = state.indexOf("|", start);
                     if (end < 0) end = state.length();
                     String jsM3u8 = state.substring(start, end).trim();
+                    // 去掉首尾引号(BLACK_SCREEN 状态用 | 分隔字段,URL 可能带引号)
+                    while (jsM3u8.startsWith("\"") || jsM3u8.startsWith("'")) {
+                        jsM3u8 = jsM3u8.substring(1);
+                    }
+                    while (jsM3u8.endsWith("\"") || jsM3u8.endsWith("'")) {
+                        jsM3u8 = jsM3u8.substring(0, jsM3u8.length() - 1);
+                    }
+                    jsM3u8 = jsM3u8.trim();
                     if (!jsM3u8.isEmpty() && jsM3u8.startsWith("http")) {
                         capturedM3u8Url = jsM3u8;
                         Log.i("CCTV-TV", "从 JS hook 获取到 m3u8: " + jsM3u8);
@@ -855,8 +939,8 @@ public final class MainActivity extends Activity {
                         .replace("\\n", "\n")
                         .replace("|", "\n");
                 updateDebugPanel("NO_VIDEO", detail);
-                // 如果 10 秒后还是没有 video 元素,且已拦截到 m3u8,用 hls.js 兜底播放
-                if (elapsedMs >= 10000 && capturedM3u8Url != null && !hlsPlayerInjected) {
+                // 如果 5 秒后还是没有 video 元素,且已拦截到 m3u8,用 hls.js 兜底播放
+                if (elapsedMs >= 5000 && capturedM3u8Url != null && !hlsPlayerInjected) {
                     hlsPlayerInjected = true;
                     updateDebugPanel("HLS_FALLBACK", "无video元素,切换hls.js直连\nm3u8=" + shortenUrl(capturedM3u8Url));
                     injectHlsPlayer(capturedM3u8Url);
@@ -865,7 +949,28 @@ public final class MainActivity extends Activity {
                 // 有声音无画面:HLSP2P 的 P2P 视频失败,音频正常
                 Log.w("CCTV-TV", "=== 有声音无画面(" + elapsedMs + "ms) ===\n" + state);
                 updateDebugPanel("BLACK_SCREEN", "有声音无画面:HLSP2P的P2P视频失败\n正在切换hls.js兜底...");
-                if (elapsedMs >= 10000 && capturedM3u8Url != null && !hlsPlayerInjected) {
+                // 如果 capturedM3u8Url 还是 null,直接从 JS 读一次 window.__cctvM3u8Url
+                if (elapsedMs >= 5000 && capturedM3u8Url == null && !hlsPlayerInjected) {
+                    webView.evaluateJavascript("window.__cctvM3u8Url", m3u8Val -> {
+                        if (gen != loadGeneration) return;
+                        if (m3u8Val != null && !"null".equals(m3u8Val)) {
+                            String url = m3u8Val.toString().trim();
+                            // 去掉首尾引号
+                            while (url.startsWith("\"") || url.startsWith("'")) url = url.substring(1);
+                            while (url.endsWith("\"") || url.endsWith("'")) url = url.substring(0, url.length() - 1);
+                            if (url.startsWith("http") && url.contains(".m3u8")) {
+                                capturedM3u8Url = url;
+                                Log.i("CCTV-TV", "从 window.__cctvM3u8Url 读到: " + url);
+                            }
+                        }
+                        // 读到后立刻触发 hls.js
+                        if (capturedM3u8Url != null && !hlsPlayerInjected) {
+                            hlsPlayerInjected = true;
+                            updateDebugPanel("HLS_FALLBACK", "有声音无画面,切换hls.js直连\nm3u8=" + shortenUrl(capturedM3u8Url));
+                            injectHlsPlayer(capturedM3u8Url);
+                        }
+                    });
+                } else if (elapsedMs >= 5000 && capturedM3u8Url != null && !hlsPlayerInjected) {
                     hlsPlayerInjected = true;
                     updateDebugPanel("HLS_FALLBACK", "有声音无画面,切换hls.js直连\nm3u8=" + shortenUrl(capturedM3u8Url));
                     injectHlsPlayer(capturedM3u8Url);
@@ -875,9 +980,9 @@ public final class MainActivity extends Activity {
                 webView.evaluateJavascript(
                         "(function(){var v=document.getElementById('h5player_player')||document.querySelector('video');if(v&&!v.__cctvAutoplayStarted){v.__cctvAutoplayStarted=true;v.muted=true;var p=v.play();if(p&&p.then){p.then(function(){setTimeout(function(){v.muted=false;},2000);}).catch(function(e){v.__cctvAutoplayStarted=false;});}else{setTimeout(function(){v.muted=false;},2000);}}return true;})()",
                         null);
-                // 如果 10 秒后视频还是暂停的,说明 HLSP2P 播放器在 WebView 上跑不起来,
+                // 如果 5 秒后视频还是暂停的,说明 HLSP2P 播放器在 WebView 上跑不起来,
                 // 用 hls.js 兜底直接播放 m3u8
-                if (elapsedMs >= 10000 && capturedM3u8Url != null && !hlsPlayerInjected) {
+                if (elapsedMs >= 5000 && capturedM3u8Url != null && !hlsPlayerInjected) {
                     hlsPlayerInjected = true;
                     updateDebugPanel("HLS_FALLBACK", "HLSP2P播放失败,切换hls.js直连\nm3u8=" + shortenUrl(capturedM3u8Url));
                     injectHlsPlayer(capturedM3u8Url);
