@@ -66,6 +66,10 @@ public final class MainActivity extends Activity {
     private final Handler handler = new Handler(Looper.getMainLooper());
     // 倒计时线程:用 background thread 跑,避免被 WebView 加载/JS 阻塞 main thread 导致 postDelayed 永不执行
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+    // 拦截到的 m3u8 URL(从 shouldInterceptRequest 捕获,用于 hls.js 兜底播放)
+    private volatile String capturedM3u8Url;
+    // hls.js 是否已注入(避免重复注入)
+    private volatile boolean hlsPlayerInjected;
     private java.util.List<ScheduledFuture<?>> pendingChecks = new java.util.ArrayList<>();
     private int loadGeneration = 0;
 
@@ -145,6 +149,11 @@ public final class MainActivity extends Activity {
                 //    修复:在最早时机 hook document.write,把 <script src=...> 转成
                 //    createElement('script') 异步插入,绕开 Chromium 干预。
                 injectDocumentWritePatch(view);
+                // 1.5) hook XMLHttpRequest 捕获 m3u8 URL
+                //   HLSP2P 在 Web Worker 里用 XHR 请求 m3u8,shouldInterceptRequest 可能拦不到 Worker 请求。
+                //   但 VDN API(返回 m3u8 URL 的接口)是从主线程发的,可以 hook 拦截。
+                //   VDN 响应 JSON 里 streamUrl 字段包含 m3u8 URL,用正则提取。
+                injectM3u8Capture(view);
                 // 2) CSS 拉满容器 + 隐藏装饰(顺序必须在补丁之后,不能影响 document.write 覆盖)
                 injectFastLoading(view);
                 // 3) 立即启动 AutoFullscreen 轮询(不等 onPageFinished,因为 CCTV 页面的
@@ -162,6 +171,18 @@ public final class MainActivity extends Activity {
             }
 
             // 抓底层资源错误(直接显示到面板,不需要等 evaluateJavascript)
+            // 拦截所有网络请求,捕获 m3u8 URL(HLSP2P 在 Web Worker 里发 XHR,
+            // JS 层 hook 不到,只能在 Android 层面拦截)
+            @Override
+            public android.webkit.WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+                String url = request.getUrl().toString();
+                if (url != null && url.contains(".m3u8") && capturedM3u8Url == null) {
+                    capturedM3u8Url = url;
+                    Log.i("CCTV-TV", "拦截到 m3u8: " + url);
+                }
+                return null; // 不拦截,让请求正常发出
+            }
+
             @Override
             public void onReceivedError(WebView view, WebResourceRequest request, android.webkit.WebResourceError error) {
                 super.onReceivedError(view, request, error);
@@ -248,6 +269,67 @@ public final class MainActivity extends Activity {
                 "  }" +
                 "  document.write=function(){var s='';for(var i=0;i<arguments.length;i++)s+=arguments[i];var c=patch(s);if(c)origWrite(c);};" +
                 "  document.writeln=function(){var s='';for(var i=0;i<arguments.length;i++)s+=arguments[i];s+='\\n';var c=patch(s);if(c)origWriteln(c);};" +
+                "})()";
+        view.evaluateJavascript(js, null);
+    }
+
+    /**
+     * hook XMLHttpRequest,捕获 m3u8 URL。
+     * HLSP2P 的 m3u8 请求在 Web Worker 里发(shouldInterceptRequest 可能拦不到),
+     * 但 VDN API(返回 m3u8 URL 的接口)是从主线程发的 XHR。
+     * VDN 响应 JSON 的 streamUrl 字段包含 m3u8 URL,用正则提取存到 window.__cctvM3u8Url。
+     * 白屏检测时如果 shouldInterceptRequest 没拦到,会从 window.__cctvM3u8Url 获取。
+     */
+    private void injectM3u8Capture(WebView view) {
+        String js =
+                "(function(){" +
+                "  if(window.__cctvM3u8Hook)return;" +
+                "  window.__cctvM3u8Hook=true;" +
+                "  window.__cctvM3u8Url=null;" +
+                "  var origOpen=XMLHttpRequest.prototype.open;" +
+                "  var origSend=XMLHttpRequest.prototype.send;" +
+                "  XMLHttpRequest.prototype.open=function(method,url){" +
+                "    this.__cctvReqUrl=url||'';" +
+                "    return origOpen.apply(this,arguments);" +
+                "  };" +
+                "  XMLHttpRequest.prototype.send=function(){" +
+                "    var self=this;" +
+                "    var reqUrl=self.__cctvReqUrl||'';" +
+                // 直接拦截 m3u8 请求(主线程发的)
+                "    if(reqUrl.indexOf('.m3u8')>=0&&!window.__cctvM3u8Url){" +
+                "      window.__cctvM3u8Url=reqUrl;" +
+                "      console.log('[CCTV-M3U8] captured from XHR: '+reqUrl);" +
+                "    }" +
+                // 拦截 VDN API 响应,从 JSON 中提取 m3u8 URL
+                "    if(reqUrl.indexOf('vdn/live')>=0||reqUrl.indexOf('getstream')>=0){" +
+                "      var origRSC=self.onreadystatechange;" +
+                "      self.onreadystatechange=function(){" +
+                "        if(self.readyState===4&&self.responseText&&!window.__cctvM3u8Url){" +
+                "          try{" +
+                "            var m=self.responseText.match(/https?:\\/\\/[^\\s\"'<>]+\\.m3u8[^\\s\"'<>]*/);" +
+                "            if(m){" +
+                "              window.__cctvM3u8Url=m[0];" +
+                "              console.log('[CCTV-M3U8] captured from VDN API: '+m[0]);" +
+                "            }" +
+                "          }catch(e){}" +
+                "        }" +
+                "        if(origRSC)return origRSC.apply(self,arguments);" +
+                "      };" +
+                "    }" +
+                "    return origSend.apply(this,arguments);" +
+                "  };" +
+                // 也 hook fetch(部分新版播放器可能用 fetch 而非 XHR)
+                "  if(window.fetch){" +
+                "    var origFetch=window.fetch;" +
+                "    window.fetch=function(input,init){" +
+                "      var url=typeof input==='string'?input:(input&&input.url||'');" +
+                "      if(url.indexOf('.m3u8')>=0&&!window.__cctvM3u8Url){" +
+                "        window.__cctvM3u8Url=url;" +
+                "        console.log('[CCTV-M3U8] captured from fetch: '+url);" +
+                "      }" +
+                "      return origFetch.apply(this,arguments);" +
+                "    };" +
+                "  }" +
                 "})()";
         view.evaluateJavascript(js, null);
     }
@@ -357,6 +439,94 @@ public final class MainActivity extends Activity {
     }
 
     /**
+     * hls.js 兜底播放器:当 CCTV 自带的 HLSP2P 播放器在 WebView 上无法播放时
+     * (WebRTC/P2P 不支持、WASM 解码失败、DRM license 获取失败等),
+     * 用开源 hls.js 库直接播放拦截到的 m3u8 URL。
+     * hls.js 纯 MSE 实现,不依赖 WebRTC/WASM/DRM,兼容性最好。
+     *
+     * 关键修复:CCTV-3/6/8 的 .ts 流解析出的视频 codec 是 avc1.64011f
+     * (H.264 High profile + constraint_set1_flag),MediaSource.addSourceBuffer
+     * 拒绝这个 codec 字符串。通过 hook addSourceBuffer,把 avc1.64XXXX 替换成
+     * avc1.640028(已知被广泛支持的 codec),只影响 SourceBuffer 类型声明,不影响实际解码。
+     * 验证:桌面 Chrome 上替换后 hls.js 成功播放 CCTV-3 m3u8 流。
+     */
+    private void injectHlsPlayer(String m3u8Url) {
+        Log.i("CCTV-TV", "注入 hls.js 播放器, m3u8=" + m3u8Url);
+        // 转义 URL 中的特殊字符,防止 JS 注入
+        String safeUrl = m3u8Url.replace("\\", "\\\\").replace("'", "\\'").replace("\n", "");
+        String js =
+                "(function(){" +
+                "  if(window.__cctvHlsPlayer)return;" +
+                "  window.__cctvHlsPlayer=true;" +
+                "  var m3u8Url='" + safeUrl + "';" +
+                // hook addSourceBuffer:修复 codec 字符串
+                // CCTV .ts 流的 avc1.64011f 被 MediaSource 拒绝,替换成 avc1.640028
+                "  if(!window.__cctvCodecFixed){" +
+                "    window.__cctvCodecFixed=true;" +
+                "    var origASB=MediaSource.prototype.addSourceBuffer;" +
+                "    MediaSource.prototype.addSourceBuffer=function(type){" +
+                "      var fixed=type.replace(/avc1\\.64[0-9a-fA-F]{4}/g,'avc1.640028');" +
+                "      if(fixed!==type)console.log('[CCTV-HLS] codec fix: '+type+' -> '+fixed);" +
+                "      return origASB.call(this,fixed);" +
+                "    };" +
+                "  }" +
+                // 隐藏 CCTV 原播放器的 video(如果有)
+                "  var origV=document.getElementById('h5player_player');" +
+                "  if(origV)origV.style.display='none';" +
+                // 创建我们的 video 元素
+                "  var video=document.createElement('video');" +
+                "  video.id='cctv-hls-player';" +
+                "  video.style.cssText='position:fixed;left:0;top:0;width:100vw;height:100vh;z-index:999999;object-fit:contain;background:#000;';" +
+                "  video.autoplay=true;" +
+                "  video.playsInline=true;" +
+                "  document.body.appendChild(video);" +
+                // 视频事件诊断(输出到 console,会被 LoggingWebChromeClient 捕获到 logcat)
+                "  video.addEventListener('playing',function(){console.log('[CCTV-HLS] PLAYING');});" +
+                "  video.addEventListener('error',function(){console.log('[CCTV-HLS] VIDEO_ERR code='+video.error.code);});" +
+                // 加载 hls.js(jsdelivr CDN,国内可访问)
+                "  var script=document.createElement('script');" +
+                "  script.src='https://cdn.jsdelivr.net/npm/hls.js@1.5.15/dist/hls.min.js';" +
+                "  script.onload=function(){" +
+                "    console.log('[CCTV-HLS] hls.js loaded');" +
+                "    if(!window.Hls){" +
+                "      console.log('[CCTV-HLS] Hls undefined, try native');" +
+                "      video.src=m3u8Url;video.play();return;" +
+                "    }" +
+                "    if(!Hls.isSupported()){" +
+                "      console.log('[CCTV-HLS] MSE not supported, try native');" +
+                "      video.src=m3u8Url;video.play();return;" +
+                "    }" +
+                // enableWorker:false — Worker 内的 console 日志不会输出到主线程,
+                // 且某些 Android WebView 的 Worker 实现有兼容性问题
+                "    var hls=new Hls({enableWorker:false,lowLatencyMode:true});" +
+                "    hls.loadSource(m3u8Url);" +
+                "    hls.attachMedia(video);" +
+                "    hls.on(Hls.Events.MANIFEST_PARSED,function(){" +
+                "      console.log('[CCTV-HLS] MANIFEST_PARSED');" +
+                "      video.play();" +
+                "    });" +
+                "    hls.on(Hls.Events.ERROR,function(e,data){" +
+                "      if(data.fatal)console.log('[CCTV-HLS] FATAL: '+data.type+' '+data.details);" +
+                "    });" +
+                "  };" +
+                "  script.onerror=function(){" +
+                // jsdelivr 失败,尝试 unpkg 备用 CDN
+                "    console.log('[CCTV-HLS] jsdelivr failed, try unpkg');" +
+                "    var s2=document.createElement('script');" +
+                "    s2.src='https://unpkg.com/hls.js@1.5.15/dist/hls.min.js';" +
+                "    s2.onload=script.onload;" +
+                "    s2.onerror=function(){" +
+                "      console.log('[CCTV-HLS] unpkg also failed, try native');" +
+                "      video.src=m3u8Url;video.play();" +
+                "    };" +
+                "    document.head.appendChild(s2);" +
+                "  };" +
+                "  document.head.appendChild(script);" +
+                "})()";
+        webView.evaluateJavascript(js, null);
+    }
+
+    /**
      * 判断频道是否需要用桌面 UA。
      * CCTV-3 综艺 / CCTV-6 电影 / CCTV-8 电视剧:移动端 UA 会被 CCTV 服务器端直接 302 重定向
      * 到 https://m.yangshipin.cn/static/empty.html(刻意空白的版权引导页),必须用桌面 UA 才能加载
@@ -371,6 +541,8 @@ public final class MainActivity extends Activity {
     private void loadChannel(int requestedIndex) {
         handler.removeCallbacksAndMessages(null);
         loadGeneration++;
+        capturedM3u8Url = null;
+        hlsPlayerInjected = false;
         int count = ChannelCatalog.CHANNELS.size();
         channelIndex = ((requestedIndex % count) + count) % count;
         Channel channel = ChannelCatalog.CHANNELS.get(channelIndex);
@@ -441,9 +613,11 @@ public final class MainActivity extends Activity {
         String js =
                 "(function(){" +
                 "  var v=document.getElementById('h5player_player')||document.querySelector('video');" +
-                "  if(v){return 'OK:'+(v.paused?'PAUSED':'PLAYING')+' src='+(v.src||v.currentSrc||'none').substring(0,60);}" +
+                "  var m3u8=window.__cctvM3u8Url||'';" +
+                "  if(v){return 'OK:'+(v.paused?'PAUSED':'PLAYING')+' src='+(v.src||v.currentSrc||'none').substring(0,60)+'|M3U8='+m3u8;}" +
                 "  var txt=(document.body&&document.body.innerText||'').replace(/\\s+/g,' ').trim();" +
                 "  var info=[];" +
+                "  info.push('M3U8='+m3u8);" +
                 "  info.push('已等='+" + (elapsedMs/1000) + ");" +
                 "  info.push('URL='+location.href);" +
                 "  info.push('TITLE='+document.title);" +
@@ -467,19 +641,46 @@ public final class MainActivity extends Activity {
                 return;
             }
             String state = value.toString();
+            // 从返回值中解析 JS hook 捕获的 m3u8 URL
+            // (shouldInterceptRequest 可能拦不到 HLSP2P Worker 内的 XHR,
+            //  但 injectM3u8Capture 在主线程 hook 了 VDN API 响应,能获取 m3u8 URL)
+            if (capturedM3u8Url == null) {
+                int m3u8Idx = state.indexOf("M3U8=");
+                if (m3u8Idx >= 0) {
+                    int start = m3u8Idx + 5;
+                    int end = state.indexOf("\n", start);
+                    if (end < 0) end = state.indexOf("\\n", start);
+                    if (end < 0) end = state.length();
+                    String jsM3u8 = state.substring(start, end).trim();
+                    if (!jsM3u8.isEmpty() && jsM3u8.startsWith("http")) {
+                        capturedM3u8Url = jsM3u8;
+                        Log.i("CCTV-TV", "从 JS hook 获取到 m3u8: " + jsM3u8);
+                    }
+                }
+            }
             if (state.startsWith("NO_VIDEO")) {
                 Log.e("CCTV-TV", "=== 白屏诊断(" + elapsedMs + "ms) ===\n" + state);
                 String detail = state.substring("NO_VIDEO|".length())
                         .replace("\\n", "\n")
                         .replace("|", "\n");
                 updateDebugPanel("NO_VIDEO", detail);
-                String firstLine = detail.split("\n")[0];
-                if (firstLine.length() > 60) firstLine = firstLine.substring(0, 60);
-                Toast.makeText(MainActivity.this, "白屏:" + firstLine, Toast.LENGTH_LONG).show();
+                // 如果 10 秒后还是没有 video 元素,且已拦截到 m3u8,用 hls.js 兜底播放
+                if (elapsedMs >= 10000 && capturedM3u8Url != null && !hlsPlayerInjected) {
+                    hlsPlayerInjected = true;
+                    updateDebugPanel("HLS_FALLBACK", "无video元素,切换hls.js直连\nm3u8=" + shortenUrl(capturedM3u8Url));
+                    injectHlsPlayer(capturedM3u8Url);
+                }
             } else if (state.contains("PAUSED")) {
                 webView.evaluateJavascript(
                         "(function(){var v=document.getElementById('h5player_player')||document.querySelector('video');if(v){v.play();}return true;})()",
                         null);
+                // 如果 10 秒后视频还是暂停的,说明 HLSP2P 播放器在 WebView 上跑不起来,
+                // 用 hls.js 兜底直接播放 m3u8
+                if (elapsedMs >= 10000 && capturedM3u8Url != null && !hlsPlayerInjected) {
+                    hlsPlayerInjected = true;
+                    updateDebugPanel("HLS_FALLBACK", "HLSP2P播放失败,切换hls.js直连\nm3u8=" + shortenUrl(capturedM3u8Url));
+                    injectHlsPlayer(capturedM3u8Url);
+                }
             } else {
                 // OK:视频播放中,隐藏面板
                 debugPanel.setVisibility(View.GONE);
