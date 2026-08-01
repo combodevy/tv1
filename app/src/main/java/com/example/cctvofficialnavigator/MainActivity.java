@@ -651,8 +651,27 @@ public final class MainActivity extends Activity {
                 "    s.textContent=css;" +
                 "    (document.head||document.documentElement).appendChild(s);" +
                 "  }" +
+                // ---------- yangshipin 专属工具函数,其他台绝对不触发 ----------
+                "  function _ysh_is(){try{return (location.host||'').indexOf('yangshipin')>=0||!!document.querySelector('video[id^=myvideo],.video-js,.video-con,[id*=vodbox]');}catch(e){return false;}}" +
+                // 锁死滚动到 (0,0):只对 yangshipin 执行(其他台不需要,且怕有副作用)
+                "  function _ysh_lockScroll(){" +
+                "    if(!_ysh_is())return;" +
+                "    try{window.scrollTo(0,0);}catch(e){}" +
+                "    try{document.documentElement.scrollTop=0;document.documentElement.scrollLeft=0;}catch(e){}" +
+                "    try{document.body.scrollTop=0;document.body.scrollLeft=0;}catch(e){}" +
+                "  }" +
+                // 模拟用户鼠标点击大播放按钮 + video 本身(绕过自动播放策略):只对 yangshipin 执行,且只执行 1 次
+                "  function _ysh_fakeClickPlay(){" +
+                "    if(!_ysh_is())return;if(window.__yshClick)return;window.__yshClick=1;" +
+                "    var btns=document.querySelectorAll('.vjs-big-play-button,.cmg-play-btn,.btn-play,.play-btn,[class*=big][class*=play],[class*=vjs][class*=play]');" +
+                "    for(var i=0;i<btns.length;i++){try{btns[i].dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window}));}catch(e){try{btns[i].click();}catch(e2){}}}" +
+                "    var vs=document.querySelectorAll('video[id^=myvideo],video');" +
+                "    for(var j=0;j<vs.length;j++){try{vs[j].muted=true;vs[j].play();}catch(e){}try{vs[j].dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window}));}catch(e){}}" +
+                "  }" +
                 "  function FastLoading(){" +
                 "    applyCss();" +
+                // yangshipin 专属: 锁滚动 + 兜底点击
+                "    _ysh_lockScroll();_ysh_fakeClickPlay();" +
                 "    if(window.__cctvFlStart===undefined)window.__cctvFlStart=Date.now();" +
                 "    if(Date.now()-window.__cctvFlStart<30000)setTimeout(FastLoading,200);" +
                 "  }" +
@@ -674,7 +693,24 @@ public final class MainActivity extends Activity {
     private void injectAutoFullscreen(WebView view) {
         String js =
                 "(function(){" +
+                // ---------- yangshipin 专属工具函数(和 injectFastLoading 里逻辑一样),其他台绝对不触发 ----------
+                "  function _ysh_is(){try{return (location.host||'').indexOf('yangshipin')>=0||!!document.querySelector('video[id^=myvideo],.video-js,.video-con,[id*=vodbox]');}catch(e){return false;}}" +
+                "  function _ysh_lockScroll(){" +
+                "    if(!_ysh_is())return;" +
+                "    try{window.scrollTo(0,0);}catch(e){}" +
+                "    try{document.documentElement.scrollTop=0;document.documentElement.scrollLeft=0;}catch(e){}" +
+                "    try{document.body.scrollTop=0;document.body.scrollLeft=0;}catch(e){}" +
+                "  }" +
+                "  function _ysh_fakeClickPlay(){" +
+                "    if(!_ysh_is())return;if(window.__yshClick)return;window.__yshClick=1;" +
+                "    var btns=document.querySelectorAll('.vjs-big-play-button,.cmg-play-btn,.btn-play,.play-btn,[class*=big][class*=play],[class*=vjs][class*=play]');" +
+                "    for(var i=0;i<btns.length;i++){try{btns[i].dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window}));}catch(e){try{btns[i].click();}catch(e2){}}}" +
+                "    var vs=document.querySelectorAll('video[id^=myvideo],video');" +
+                "    for(var j=0;j<vs.length;j++){try{vs[j].muted=true;vs[j].play();}catch(e){}try{vs[j].dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window}));}catch(e){}}" +
+                "  }" +
                 "  function ForceFullscreen(){" +
+                // yangshipin 专属前置: 锁滚动 + 兜底点击(其他台完全不执行,立刻 return)
+                "    _ysh_lockScroll();_ysh_fakeClickPlay();" +
                 // 1) 定位 video 元素
                 //    优先级:
                 //      ① video[id^=myvideo]  → yangshipin tv/home video.js 播放器 (ID动态前缀,2026-08-01实机确认)
