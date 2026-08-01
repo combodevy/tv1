@@ -2,8 +2,10 @@ package com.example.cctvofficialnavigator;
 
 import android.annotation.SuppressLint;
 import android.app.Activity;
+import android.content.ActivityNotFoundException;
 import android.graphics.Bitmap;
 import android.graphics.Color;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
@@ -28,6 +30,8 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
+
+import androidx.browser.customtabs.CustomTabsIntent;
 
 import java.net.URI;
 import java.util.ArrayList;
@@ -84,6 +88,8 @@ public final class MainActivity extends Activity {
     // 数字输入:按数字键直接跳频道,3秒延迟支持多位数
     private final StringBuilder pendingNumber = new StringBuilder();
     private Runnable numberInputTimeoutRunnable;
+    // CCTV-3/6/8 用 Chrome Custom Tab(完整 Chrome 引擎,含 Widevine DRM + window.chrome)
+    private boolean returningFromChrome = false;
     // 倒计时线程:用 background thread 跑,避免被 WebView 加载/JS 阻塞 main thread 导致 postDelayed 永不执行
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
     // 拦截到的 m3u8 URL(从 shouldInterceptRequest 捕获,用于 hls.js 兜底播放)
@@ -829,6 +835,63 @@ public final class MainActivity extends Activity {
         return u.contains("/cctv3") || u.contains("/cctv6") || u.contains("/cctv8");
     }
 
+    /**
+     * 用 Chrome Custom Tab 打开 CCTV-3/6/8(完整 Chrome 引擎,非 WebView)。
+     * Chrome 有完整的 window.chrome、Widevine DRM、MediaSource 支持,
+     * 解决 WebView "有声音无画面"问题(DRM 视频流无法在 WebView 中解码)。
+     * 桌面 UA 通过 HTTP 头传入,避免服务器端重定向到空页。
+     * Chrome 原生支持 HTML5 全屏(CCTV 播放器的全屏按钮可直接使用)。
+     */
+    private void launchChromeTab(String url) {
+        Log.i("CCTV-TV", "启动 Chrome Custom Tab: " + url);
+        CustomTabsIntent.Builder builder = new CustomTabsIntent.Builder();
+        builder.setUrlBarHidingEnabled(true); // 滚动时隐藏地址栏
+        builder.setShowTitle(false);
+        builder.setToolbarColor(Color.BLACK);
+
+        CustomTabsIntent customTabsIntent = builder.build();
+
+        // 桌面 UA + Referer 作为 HTTP 头传入(避免服务器端重定向到 empty.html)
+        Bundle headers = new Bundle();
+        headers.putString("User-Agent", DESKTOP_UA);
+        headers.putString("Referer", "https://tv.cctv.com/");
+        customTabsIntent.intent.putExtra(android.provider.Browser.EXTRA_HEADERS, headers);
+
+        returningFromChrome = true;
+
+        // 优先用 Chrome(完整引擎,含 Widevine)
+        customTabsIntent.intent.setPackage("com.android.chrome");
+        try {
+            customTabsIntent.launchUrl(this, Uri.parse(url));
+            return;
+        } catch (ActivityNotFoundException e) {
+            Log.w("CCTV-TV", "Chrome 未安装,尝试其他浏览器");
+        }
+
+        // 回退到系统默认浏览器
+        customTabsIntent.intent.setPackage(null);
+        try {
+            customTabsIntent.launchUrl(this, Uri.parse(url));
+        } catch (Exception e2) {
+            Log.e("CCTV-TV", "无浏览器可用,回退到 WebView");
+            returningFromChrome = false;
+            // 回退到 WebView(带桌面 UA + 所有注入)
+            webView.loadUrl(url);
+            scheduleWhiteScreenCheck();
+        }
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (returningFromChrome) {
+            // 从 Chrome 返回,显示频道提示
+            returningFromChrome = false;
+            Channel ch = ChannelCatalog.CHANNELS.get(channelIndex);
+            showChannelHint(ch.name + "  ·  按上下键切台  ·  按OK打开频道列表");
+        }
+    }
+
     private void loadChannel(int requestedIndex) {
         handler.removeCallbacksAndMessages(null);
         // 切频道时关闭频道列表和数字输入提示
@@ -858,7 +921,14 @@ public final class MainActivity extends Activity {
         // 所以 MuMu 上 CCTV-3/6/8 会有声音没画面。真实 ARM 电视盒子有硬件解码器,不受影响。
         WebSettings settings = webView.getSettings();
         if (needsDesktopUA(channel.officialUrl)) {
+            // CCTV-3/6/8:用 Chrome Custom Tab(完整 Chrome 引擎)
+            // Chrome 有完整的 window.chrome、Widevine DRM、MediaSource 支持
+            // 桌面 UA 作为 HTTP 头传入,避免服务器端重定向到空页
             settings.setUserAgentString(DESKTOP_UA);
+            updateDebugPanel("Chrome引擎", channel.name + " [桌面UA]");
+            showChannelHint(channel.name + "  ·  按返回键回到频道列表");
+            launchChromeTab(channel.officialUrl);
+            return;
         } else {
             settings.setUserAgentString(null); // null = 回退到系统默认移动 UA
         }
