@@ -12,13 +12,6 @@
         android:focusable="true"
         android:focusableInTouchMode="true" />
 
-    <!-- GeckoView: CCTV-3/6/8 用(Firefox 引擎,完整 DRM + MediaSource) -->
-    <org.mozilla.geckoview.GeckoView
-        android:id="@+id/gecko_view"
-        android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:visibility="gone" />
-
     <TextView
         android:id="@+id/channel_hint"
         android:layout_width="wrap_content"
