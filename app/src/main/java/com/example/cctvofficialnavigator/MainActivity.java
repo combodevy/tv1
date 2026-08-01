@@ -72,6 +72,10 @@ public final class MainActivity extends Activity {
     private volatile boolean hlsPlayerInjected;
     private java.util.List<ScheduledFuture<?>> pendingChecks = new java.util.ArrayList<>();
     private int loadGeneration = 0;
+    // HTML5 全屏自定义视图:WebView 进入全屏时(video.webkitRequestFullscreen)会传入一个包含 SurfaceView 的 View,
+    // 把它放到 rootContainer 顶层全屏显示,可解决 CSS 硬拉 video 导致的"有声音没画面"问题。
+    private View customFullscreenView;
+    private WebChromeClient.CustomViewCallback customFullscreenCallback;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -125,6 +129,7 @@ public final class MainActivity extends Activity {
         settings.setAllowContentAccess(true);
 
         // 用自定义的 WebChromeClient 拦截 console 输出和加载进度(CCTV 内部的 JS 报错能反映到 logcat/面板)
+        // 同时处理 HTML5 全屏(onShowCustomView),让 video 用 WebView 自己的全屏机制渲染,避免 CSS 硬拉导致黑屏
         webView.setWebChromeClient(new LoggingWebChromeClient(this));
         webView.setWebViewClient(new WebViewClient() {
             @Override
@@ -434,18 +439,23 @@ public final class MainActivity extends Activity {
                 // 修复:先 muted=true 触发 play(),播放成功后延迟 2 秒取消 muted 恢复声音。
                 // 用 __cctvAutoplayStarted 防止重复触发。
                 "      try{" +
-                "        if(v.paused&&!v.__cctvAutoplayStarted){" +
-                "          v.__cctvAutoplayStarted=true;" +
-                "          v.muted=true;" +
-                "          var p=v.play();" +
-                "          if(p&&p.then){" +
-                "            p.then(function(){setTimeout(function(){v.muted=false;},2000);}).catch(function(e){v.__cctvAutoplayStarted=false;});" +
-                "          }else{" +
+                "      if(v.paused&&!v.__cctvAutoplayStarted){" +
+                "        v.__cctvAutoplayStarted=true;" +
+                "        v.muted=true;" +
+                "        var p=v.play();" +
+                "        if(p&&p.then){" +
+                "          p.then(function(){" +
                 "            setTimeout(function(){v.muted=false;},2000);" +
-                "          }" +
+                "            try{v.webkitRequestFullscreen();}catch(e){}" +
+                "          }).catch(function(e){v.__cctvAutoplayStarted=false;});" +
+                "        }else{" +
+                "          setTimeout(function(){v.muted=false;},2000);" +
+                "          try{v.webkitRequestFullscreen();}catch(e){}" +
                 "        }" +
-                "      }catch(e){}" +
-                "      v.style.position='fixed';" +
+                "      }" +
+                "    }catch(e){}" +
+                "    try{if(v.webkitRequestFullscreen&&!v.__cctvFsRequested){v.__cctvFsRequested=true;v.webkitRequestFullscreen();}}catch(e){}" +
+                "    v.style.position='fixed';" +
                 "      v.style.display='block';" +
                 "      v.style.visibility='visible';" +
                 "      v.style.opacity='1';" +
@@ -612,6 +622,14 @@ public final class MainActivity extends Activity {
         loadGeneration++;
         capturedM3u8Url = null;
         hlsPlayerInjected = false;
+        // 如果当前处于 WebView HTML5 全屏(custom view),先退出,否则切台后画面仍停留在旧视频
+        if (customFullscreenView != null) {
+            if (customFullscreenCallback != null) customFullscreenCallback.onCustomViewHidden();
+            rootContainer.removeView(customFullscreenView);
+            customFullscreenView = null;
+            customFullscreenCallback = null;
+            webView.setVisibility(View.VISIBLE);
+        }
         int count = ChannelCatalog.CHANNELS.size();
         channelIndex = ((requestedIndex % count) + count) % count;
         Channel channel = ChannelCatalog.CHANNELS.get(channelIndex);
@@ -909,6 +927,33 @@ public final class MainActivity extends Activity {
                 lastProgressShown = bucket;
                 activity.updateDebugPanel("PROGRESS " + newProgress + "%", null);
             }
+        }
+
+        @Override
+        public void onShowCustomView(View view, WebChromeClient.CustomViewCallback callback) {
+            super.onShowCustomView(view, callback);
+            if (activity == null) return;
+            if (activity.customFullscreenView != null) {
+                callback.onCustomViewHidden();
+                return;
+            }
+            activity.customFullscreenCallback = callback;
+            activity.customFullscreenView = view;
+            activity.rootContainer.addView(view, new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            activity.webView.setVisibility(View.GONE);
+            activity.updateDebugPanel("FULLSCREEN", "WebView 进入全屏模式");
+        }
+
+        @Override
+        public void onHideCustomView() {
+            super.onHideCustomView();
+            if (activity == null) return;
+            if (activity.customFullscreenView == null) return;
+            activity.rootContainer.removeView(activity.customFullscreenView);
+            activity.customFullscreenView = null;
+            activity.customFullscreenCallback = null;
+            activity.webView.setVisibility(View.VISIBLE);
         }
 
         @Override
