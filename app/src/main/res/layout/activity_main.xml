@@ -25,17 +25,48 @@
         android:textSize="20sp"
         android:visibility="gone" />
 
-    <!-- 诊断面板:白屏时显示在屏幕中央,用户能直接看到,避免错过 Toast -->
+    <!-- 进度提示: 右上角小字, 自动消失 -->
     <TextView
-        android:id="@+id/debug_panel"
-        android:layout_width="match_parent"
+        android:id="@+id/progress_hint"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|end"
+        android:layout_margin="16dp"
+        android:background="#B3000000"
+        android:maxWidth="320dp"
+        android:paddingHorizontal="12dp"
+        android:paddingVertical="6dp"
+        android:textColor="#FFFFFFFF"
+        android:textSize="12sp"
+        android:visibility="gone" />
+
+    <!-- 频道列表面板: 左半屏, 纵向列表 -->
+    <ScrollView
+        android:id="@+id/channel_list_scroll"
+        android:layout_width="280dp"
+        android:layout_height="match_parent"
+        android:layout_gravity="start"
+        android:background="#CC000000"
+        android:fillViewport="true"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:id="@+id/channel_list_items"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:padding="8dp" />
+    </ScrollView>
+
+    <!-- 数字输入提示: 屏幕中央大字 -->
+    <TextView
+        android:id="@+id/number_input_hint"
+        android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_gravity="center"
-        android:layout_margin="48dp"
         android:background="#E6000000"
-        android:padding="20dp"
-        android:textColor="#FFFF00"
-        android:textSize="16sp"
-        android:fontFamily="monospace"
+        android:padding="40dp"
+        android:textColor="#FFFFFFFF"
+        android:textSize="72sp"
         android:visibility="gone" />
 </FrameLayout>

@@ -24,10 +24,15 @@ import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.FrameLayout;
+import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
 import java.net.URI;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -61,13 +66,24 @@ public final class MainActivity extends Activity {
 
     private WebView webView;
     private TextView channelHint;
-    private TextView debugPanel;
+    private TextView progressHint;
+    private ScrollView channelListScroll;
+    private LinearLayout channelListItems;
+    private TextView numberInputHint;
     private FrameLayout rootContainer;
     private int channelIndex;
     private final Runnable hideChannelHint = () -> channelHint.setVisibility(View.GONE);
+    private final Runnable hideProgressHint = () -> progressHint.setVisibility(View.GONE);
     private final Handler handler = new Handler(Looper.getMainLooper());
     // 手势检测:上滑=下一个频道,下滑=上一个频道(手机触屏操作)
     private GestureDetector gestureDetector;
+    // 频道列表状态
+    private boolean channelListVisible = false;
+    private int selectedListIndex = 0;
+    private List<Integer> sortedChannelIndices;
+    // 数字输入:按数字键直接跳频道,3秒延迟支持多位数
+    private final StringBuilder pendingNumber = new StringBuilder();
+    private Runnable numberInputTimeoutRunnable;
     // 倒计时线程:用 background thread 跑,避免被 WebView 加载/JS 阻塞 main thread 导致 postDelayed 永不执行
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
     // 拦截到的 m3u8 URL(从 shouldInterceptRequest 捕获,用于 hls.js 兜底播放)
@@ -98,25 +114,49 @@ public final class MainActivity extends Activity {
         setContentView(R.layout.activity_main);
         webView = findViewById(R.id.live_web_view);
         channelHint = findViewById(R.id.channel_hint);
-        debugPanel = findViewById(R.id.debug_panel);
+        progressHint = findViewById(R.id.progress_hint);
+        channelListScroll = findViewById(R.id.channel_list_scroll);
+        channelListItems = findViewById(R.id.channel_list_items);
+        numberInputHint = findViewById(R.id.number_input_hint);
         rootContainer = findViewById(R.id.root_container);
         webView.setBackgroundColor(Color.BLACK);
         channelIndex = savedInstanceState == null ? 0 : savedInstanceState.getInt(SAVED_CHANNEL_INDEX, 0);
-        // 初始化手势检测器:上滑=下一个频道,下滑=上一个频道
+        buildSortedChannelList();
+        // 初始化手势检测器:
+        //  - 单击 → 显示/隐藏频道列表
+        //  - 上滑/下滑 → 频道列表可见时导航列表,否则切换频道
         gestureDetector = new GestureDetector(this, new GestureDetector.SimpleOnGestureListener() {
             private static final int SWIPE_THRESHOLD = 100;
             private static final int SWIPE_VELOCITY_THRESHOLD = 100;
+            @Override
+            public boolean onSingleTapConfirmed(MotionEvent e) {
+                if (channelListVisible) {
+                    // 列表可见时单击 = 选中当前高亮项
+                    selectChannelFromList();
+                } else {
+                    showChannelList();
+                }
+                return true;
+            }
             @Override
             public boolean onFling(MotionEvent e1, MotionEvent e2, float velocityX, float velocityY) {
                 if (e1 == null || e2 == null) return false;
                 float diffY = e2.getY() - e1.getY();
                 if (Math.abs(diffY) > SWIPE_THRESHOLD && Math.abs(velocityY) > SWIPE_VELOCITY_THRESHOLD) {
-                    if (diffY < 0) {
-                        // 上滑 → 下一个频道
-                        loadChannel(channelIndex + 1);
+                    if (channelListVisible) {
+                        // 频道列表可见时:上滑→下一项,下滑→上一项
+                        if (diffY < 0) {
+                            selectedListIndex = Math.min(sortedChannelIndices.size() - 1, selectedListIndex + 1);
+                        } else {
+                            selectedListIndex = Math.max(0, selectedListIndex - 1);
+                        }
+                        updateListHighlight();
                     } else {
-                        // 下滑 → 上一个频道
-                        loadChannel(channelIndex - 1);
+                        if (diffY < 0) {
+                            loadChannel(channelIndex + 1);
+                        } else {
+                            loadChannel(channelIndex - 1);
+                        }
                     }
                     return true;
                 }
@@ -655,6 +695,12 @@ public final class MainActivity extends Activity {
 
     private void loadChannel(int requestedIndex) {
         handler.removeCallbacksAndMessages(null);
+        // 切频道时关闭频道列表和数字输入提示
+        if (channelListVisible) hideChannelList();
+        if (numberInputHint.getVisibility() == View.VISIBLE) {
+            numberInputHint.setVisibility(View.GONE);
+            pendingNumber.setLength(0);
+        }
         loadGeneration++;
         capturedM3u8Url = null;
         hlsPlayerInjected = false;
@@ -680,10 +726,9 @@ public final class MainActivity extends Activity {
         } else {
             settings.setUserAgentString(null); // null = 回退到系统默认移动 UA
         }
-        // 切换频道时先清掉诊断面板,并显示"加载中"占位
+        // 切换频道时先显示"加载中"进度提示
         String uaTag = needsDesktopUA(channel.officialUrl) ? " [桌面UA]" : " [移动UA]";
-        debugPanel.setText("加载中..." + uaTag + " 频道=" + channel.name + "\nURL=" + channel.officialUrl);
-        debugPanel.setVisibility(View.VISIBLE);
+        updateDebugPanel("加载中", channel.name + uaTag);
         webView.loadUrl(channel.officialUrl);
         showChannelHint(channel.name);
         // 立即开始白屏倒计时,不依赖 onPageFinished
@@ -693,7 +738,7 @@ public final class MainActivity extends Activity {
 
     private void showChannelHint(String channelName) {
         channelHint.removeCallbacks(hideChannelHint);
-        channelHint.setText(channelName + "  ·  上下键切换频道  ·  菜单键显示提示");
+        channelHint.setText(channelName + "  ·  上下键切台  ·  OK键频道列表  ·  数字键直跳");
         channelHint.setVisibility(View.VISIBLE);
         channelHint.postDelayed(hideChannelHint, CHANNEL_HINT_DURATION_MS);
     }
@@ -838,8 +883,8 @@ public final class MainActivity extends Activity {
                     injectHlsPlayer(capturedM3u8Url);
                 }
             } else {
-                // OK:视频播放中,隐藏面板
-                debugPanel.setVisibility(View.GONE);
+                // OK:视频播放中,隐藏进度提示
+                progressHint.setVisibility(View.GONE);
             }
         });
     }
@@ -856,17 +901,53 @@ public final class MainActivity extends Activity {
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
         if (event.getAction() == KeyEvent.ACTION_DOWN) {
+            // 数字键 0-9: 直接跳频道(3秒延迟,支持两位数)
+            if (event.getKeyCode() >= KeyEvent.KEYCODE_0 && event.getKeyCode() <= KeyEvent.KEYCODE_9) {
+                int digit = event.getKeyCode() - KeyEvent.KEYCODE_0;
+                handleNumberInput(digit);
+                return true;
+            }
+            // OK/Enter: 频道列表可见时=选中,不可见时=显示列表
+            if (event.getKeyCode() == KeyEvent.KEYCODE_DPAD_CENTER
+                    || event.getKeyCode() == KeyEvent.KEYCODE_ENTER) {
+                if (channelListVisible) {
+                    selectChannelFromList();
+                } else {
+                    showChannelList();
+                }
+                return true;
+            }
+            // 返回键: 频道列表可见时=关闭列表
+            if (event.getKeyCode() == KeyEvent.KEYCODE_BACK && channelListVisible) {
+                hideChannelList();
+                return true;
+            }
+            // 上/下: 频道列表可见时=导航列表,否则=切换频道
             if (event.getKeyCode() == KeyEvent.KEYCODE_DPAD_UP) {
-                loadChannel(channelIndex - 1);
+                if (channelListVisible) {
+                    selectedListIndex = Math.max(0, selectedListIndex - 1);
+                    updateListHighlight();
+                } else {
+                    loadChannel(channelIndex - 1);
+                }
                 return true;
             }
             if (event.getKeyCode() == KeyEvent.KEYCODE_DPAD_DOWN) {
-                loadChannel(channelIndex + 1);
+                if (channelListVisible) {
+                    selectedListIndex = Math.min(sortedChannelIndices.size() - 1, selectedListIndex + 1);
+                    updateListHighlight();
+                } else {
+                    loadChannel(channelIndex + 1);
+                }
                 return true;
             }
+            // 菜单键: 显示频道列表
             if (event.getKeyCode() == KeyEvent.KEYCODE_MENU) {
-                // 菜单键:重试当前频道(CCTV-3/6/8 等白屏时很有用)
-                loadChannel(channelIndex);
+                if (channelListVisible) {
+                    hideChannelList();
+                } else {
+                    showChannelList();
+                }
                 return true;
             }
         }
@@ -891,6 +972,149 @@ public final class MainActivity extends Activity {
         channelHint.removeCallbacks(hideChannelHint);
         webView.destroy();
         super.onDestroy();
+    }
+
+    // ==================== 频道列表 ====================
+
+    /**
+     * 从频道名提取频道号: "CCTV-1 综合"→1, "CCTV-5+ 体育赛事"→5, "CCTV-9 纪录"→9
+     */
+    private static int extractChannelNumber(String name) {
+        if (name == null) return 999;
+        int idx = name.indexOf("CCTV-");
+        if (idx < 0) return 999;
+        int start = idx + 5;
+        int end = start;
+        while (end < name.length() && Character.isDigit(name.charAt(end))) end++;
+        if (end == start) return 999;
+        try {
+            return Integer.parseInt(name.substring(start, end));
+        } catch (NumberFormatException e) {
+            return 999;
+        }
+    }
+
+    /**
+     * 按频道号正序排序(CCTV-1, CCTV-2, ..., CCTV-17),同号保持原序。
+     */
+    private void buildSortedChannelList() {
+        sortedChannelIndices = new ArrayList<>();
+        for (int i = 0; i < ChannelCatalog.CHANNELS.size(); i++) {
+            sortedChannelIndices.add(i);
+        }
+        Collections.sort(sortedChannelIndices, (a, b) -> {
+            int numA = extractChannelNumber(ChannelCatalog.CHANNELS.get(a).name);
+            int numB = extractChannelNumber(ChannelCatalog.CHANNELS.get(b).name);
+            return Integer.compare(numA, numB);
+        });
+    }
+
+    /**
+     * 显示频道列表(左半屏纵向),高亮当前频道。
+     */
+    private void showChannelList() {
+        if (sortedChannelIndices == null) buildSortedChannelList();
+        channelListItems.removeAllViews();
+        selectedListIndex = 0;
+        for (int i = 0; i < sortedChannelIndices.size(); i++) {
+            int origIdx = sortedChannelIndices.get(i);
+            Channel ch = ChannelCatalog.CHANNELS.get(origIdx);
+            int chNum = extractChannelNumber(ch.name);
+            TextView tv = new TextView(this);
+            tv.setText(chNum + ". " + ch.name);
+            tv.setTextSize(16);
+            tv.setPadding(24, 16, 16, 16);
+            tv.setTextColor(Color.WHITE);
+            if (origIdx == channelIndex) {
+                selectedListIndex = i;
+            }
+            channelListItems.addView(tv);
+        }
+        channelListScroll.setVisibility(View.VISIBLE);
+        channelListVisible = true;
+        updateListHighlight();
+        updateDebugPanel("频道列表", "OK键选择/返回键关闭");
+    }
+
+    private void hideChannelList() {
+        channelListScroll.setVisibility(View.GONE);
+        channelListVisible = false;
+    }
+
+    private void updateListHighlight() {
+        for (int i = 0; i < channelListItems.getChildCount(); i++) {
+            TextView tv = (TextView) channelListItems.getChildAt(i);
+            if (i == selectedListIndex) {
+                tv.setBackgroundColor(Color.parseColor("#CCFF8800"));
+                tv.setTextColor(Color.BLACK);
+                // 滚动到可见位置
+                channelListScroll.smoothScrollTo(0, Math.max(0, tv.getTop() - 50));
+            } else {
+                tv.setBackgroundColor(Color.TRANSPARENT);
+                tv.setTextColor(Color.WHITE);
+            }
+        }
+    }
+
+    /**
+     * 选中频道列表中当前高亮项:加载频道并隐藏列表。
+     */
+    private void selectChannelFromList() {
+        if (sortedChannelIndices == null || selectedListIndex >= sortedChannelIndices.size()) {
+            hideChannelList();
+            return;
+        }
+        int origIdx = sortedChannelIndices.get(selectedListIndex);
+        hideChannelList();
+        loadChannel(origIdx);
+    }
+
+    // ==================== 数字输入 ====================
+
+    /**
+     * 按数字键直接跳频道:3秒延迟,支持输入两位数(如 12 → CCTV-12)。
+     * 延迟期间在屏幕中央显示已输入的数字。
+     */
+    private void handleNumberInput(int digit) {
+        // 取消之前的定时器
+        if (numberInputTimeoutRunnable != null) {
+            handler.removeCallbacks(numberInputTimeoutRunnable);
+        }
+        // 最多两位数
+        if (pendingNumber.length() < 2) {
+            pendingNumber.append(digit);
+        }
+        String numStr = pendingNumber.toString();
+        numberInputHint.setText(numStr);
+        numberInputHint.setVisibility(View.VISIBLE);
+        // 3秒后跳转
+        final String finalNum = numStr;
+        numberInputTimeoutRunnable = () -> {
+            numberInputHint.setVisibility(View.GONE);
+            pendingNumber.setLength(0);
+            try {
+                int chNum = Integer.parseInt(finalNum);
+                jumpToChannelNumber(chNum);
+            } catch (NumberFormatException ignored) {
+            }
+        };
+        handler.postDelayed(numberInputTimeoutRunnable, 3000);
+    }
+
+    /**
+     * 按频道号跳转:找到第一个匹配的频道并加载。
+     */
+    private void jumpToChannelNumber(int num) {
+        if (sortedChannelIndices == null) buildSortedChannelList();
+        for (int i = 0; i < sortedChannelIndices.size(); i++) {
+            int origIdx = sortedChannelIndices.get(i);
+            Channel ch = ChannelCatalog.CHANNELS.get(origIdx);
+            if (extractChannelNumber(ch.name) == num) {
+                loadChannel(origIdx);
+                return;
+            }
+        }
+        updateDebugPanel("未找到", "频道 " + num);
     }
 
     private void enterImmersiveMode() {
@@ -932,42 +1156,23 @@ public final class MainActivity extends Activity {
     }
 
     /**
-     * 把状态信息写进中央诊断面板(用户看得见,不再错过 Toast)。
-     * 优先级:NET_ERR > HTTP_ERR > CONSOLE_ERR > PROGRESS > NO_VIDEO dump > 加载中。
-     * 新信息比旧信息重要时才覆盖,避免 LOADING 覆盖掉 ERROR。
+     * 右上角进度提示:只显示简短状态(tag),3秒后自动消失。
+     * 详细诊断信息仍写入 logcat(adb logcat -s CCTV-TV)。
      */
     private void updateDebugPanel(String title, String extra) {
-        int priority;
         if (title == null) return;
-        String tl = title.toUpperCase(Locale.ROOT);
-        if (tl.startsWith("MAIN_FRAME_ERROR") || tl.startsWith("NET_ERR")) priority = 100;
-        else if (tl.startsWith("HTTP_ERROR")) priority = 90;
-        else if (tl.startsWith("CONSOLE_ERR")) priority = 80;
-        else if (tl.startsWith("NO_VIDEO")) priority = 70;
-        else if (tl.startsWith("诊断中")) priority = 60;
-        else if (tl.startsWith("onPageFinished")) priority = 50;
-        else if (tl.startsWith("PROGRESS")) priority = 30;
-        else if (tl.startsWith("onPageStarted")) priority = 20;
-        else priority = 10;
-        // 如果面板已显示更高优先级的内容(如错误),不要用低级的"加载中"覆盖它
-        CharSequence existing = debugPanel.getText();
-        if (existing != null && existing.length() > 0) {
-            String ex = existing.toString().toUpperCase(Locale.ROOT);
-            int exPriority;
-            if (ex.startsWith("MAIN_FRAME_ERROR") || ex.startsWith("NET_ERR")) exPriority = 100;
-            else if (ex.startsWith("HTTP_ERROR")) exPriority = 90;
-            else if (ex.startsWith("CONSOLE_ERR")) exPriority = 80;
-            else if (ex.startsWith("NO_VIDEO")) exPriority = 70;
-            else if (ex.startsWith("诊断中")) exPriority = 60;
-            else if (ex.startsWith("ONPAGEFINISHED")) exPriority = 50;
-            else if (ex.startsWith("PROGRESS")) exPriority = 30;
-            else if (ex.startsWith("ONPAGESTARTED") || ex.startsWith("加载中")) exPriority = 20;
-            else exPriority = 0;
-            if (priority < exPriority) return;
+        // 屏幕上只显示简短 tag(第一行),避免大段诊断文字挡住视频
+        String display = title;
+        if (extra != null && !extra.isEmpty()) {
+            int nl = extra.indexOf('\n');
+            display = nl > 0 ? title + " " + extra.substring(0, nl) : title + " " + extra;
         }
-        String line2 = extra == null ? (webView.getUrl() != null ? "URL=" + shortenUrl(webView.getUrl()) : "") : extra;
-        debugPanel.setText(title + "\n" + line2);
-        debugPanel.setVisibility(View.VISIBLE);
+        if (display.length() > 80) display = display.substring(0, 80);
+        progressHint.setText(display);
+        progressHint.setVisibility(View.VISIBLE);
+        // 自动消失:3秒后隐藏
+        handler.removeCallbacks(hideProgressHint);
+        handler.postDelayed(hideProgressHint, 3000);
     }
 
     /**
