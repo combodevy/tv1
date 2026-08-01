@@ -122,8 +122,11 @@ public final class MainActivity extends Activity {
             settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
         }
 
-        // 启用 WebView 硬件加速(默认开启,显式确保);MSE/blob URL 视频需要硬件合成
-        webView.setLayerType(View.LAYER_TYPE_HARDWARE, null);
+        // 关键修复: CCTV-3/6/8 用桌面 UA 时,HLSP2P 播放器通过 MSE (MediaSource Extensions)
+        // 播放 blob URL 视频。在 x86 模拟器(MuMu)和部分电视盒子上,硬件视频解码器不支持
+        // 该流的 H.264 profile/level,导致"有声音没画面"。
+        // 切换到软件渲染层,让 CPU 软解视频,绕过硬件解码器兼容性问题。
+        webView.setLayerType(View.LAYER_TYPE_SOFTWARE, null);
         // 允许在 file: 协议下访问内容(某些缓存/本地资源场景需要)
         settings.setAllowFileAccess(true);
         settings.setAllowContentAccess(true);
