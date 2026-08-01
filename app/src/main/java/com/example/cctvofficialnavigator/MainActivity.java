@@ -74,6 +74,7 @@ public final class MainActivity extends Activity {
     private int loadGeneration = 0;
     // HTML5 全屏自定义视图:WebView 进入全屏时(video.webkitRequestFullscreen)会传入一个包含 SurfaceView 的 View,
     // 把它放到 rootContainer 顶层全屏显示,可解决 CSS 硬拉 video 导致的"有声音没画面"问题。
+    // 注意:MuMu(x86)模拟器无硬件H.264解码器,此方案在MuMu上同样无画面;真实ARM电视盒子正常。
     private View customFullscreenView;
     private WebChromeClient.CustomViewCallback customFullscreenCallback;
 
@@ -122,11 +123,10 @@ public final class MainActivity extends Activity {
             settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
         }
 
-        // 关键修复: CCTV-3/6/8 用桌面 UA 时,HLSP2P 播放器通过 MSE (MediaSource Extensions)
-        // 播放 blob URL 视频。在 x86 模拟器(MuMu)和部分电视盒子上,硬件视频解码器不支持
-        // 该流的 H.264 profile/level,导致"有声音没画面"。
-        // 切换到软件渲染层,让 CPU 软解视频,绕过硬件解码器兼容性问题。
-        webView.setLayerType(View.LAYER_TYPE_SOFTWARE, null);
+        // 启用 WebView 硬件加速(默认开启,显式确保);MSE/blob URL 视频需要硬件合成
+        // 注意:MuMu 等 x86 模拟器无硬件 H.264 解码器,会导致"有声音没画面",这是模拟器限制,
+        // 真实 ARM 电视盒子有硬件解码器,不受影响。
+        webView.setLayerType(View.LAYER_TYPE_HARDWARE, null);
         // 允许在 file: 协议下访问内容(某些缓存/本地资源场景需要)
         settings.setAllowFileAccess(true);
         settings.setAllowContentAccess(true);
