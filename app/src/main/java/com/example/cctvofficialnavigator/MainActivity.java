@@ -29,12 +29,6 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import org.mozilla.geckoview.GeckoRuntime;
-import org.mozilla.geckoview.GeckoRuntimeSettings;
-import org.mozilla.geckoview.GeckoSession;
-import org.mozilla.geckoview.GeckoSessionSettings;
-import org.mozilla.geckoview.GeckoView;
-
 import java.net.URI;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -64,11 +58,6 @@ public final class MainActivity extends Activity {
     private static final String SAVED_CHANNEL_INDEX = "channel_index";
     private static final long CHANNEL_HINT_DURATION_MS = 1800L;
     private static final long WHITE_SCREEN_CHECK_DELAY_MS = 15000L;
-    // 桌面 UA:仅用于 CCTV-3/6/8。版权敏感频道在移动端 UA 下会被直接 302 重定向到
-    // https://m.yangshipin.cn/static/empty.html(刻意空白页,引导用户装央视频 APP)。
-    // 其他频道用系统默认移动 UA(桌面 UA 会让 CCTV-9 等频道黑屏无法播放)。
-    private static final String DESKTOP_UA =
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
 
     private WebView webView;
     private TextView channelHint;
@@ -90,11 +79,6 @@ public final class MainActivity extends Activity {
     // 数字输入:按数字键直接跳频道,3秒延迟支持多位数
     private final StringBuilder pendingNumber = new StringBuilder();
     private Runnable numberInputTimeoutRunnable;
-    // CCTV-3/6/8 用 GeckoView(Firefox 引擎,内嵌完整浏览器引擎)
-    private GeckoView geckoView;
-    private GeckoRuntime geckoRuntime;
-    private GeckoSession geckoSession;
-    private boolean geckoReady = false;
     // 倒计时线程:用 background thread 跑,避免被 WebView 加载/JS 阻塞 main thread 导致 postDelayed 永不执行
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
     // 拦截到的 m3u8 URL(从 shouldInterceptRequest 捕获,用于 hls.js 兜底播放)
@@ -103,9 +87,7 @@ public final class MainActivity extends Activity {
     private volatile boolean hlsPlayerInjected;
     private java.util.List<ScheduledFuture<?>> pendingChecks = new java.util.ArrayList<>();
     private int loadGeneration = 0;
-    // HTML5 全屏自定义视图:WebView 进入全屏时(video.webkitRequestFullscreen)会传入一个包含 SurfaceView 的 View,
-    // 把它放到 rootContainer 顶层全屏显示,可解决 CSS 硬拉 video 导致的"有声音没画面"问题。
-    // 注意:MuMu(x86)模拟器无硬件H.264解码器,此方案在MuMu上同样无画面;真实ARM电视盒子正常。
+    // HTML5 全屏自定义视图:WebView 进入全屏时(video.webkitRequestFullscreen)会传入一个包含 SurfaceView 的 View
     private View customFullscreenView;
     private WebChromeClient.CustomViewCallback customFullscreenCallback;
 
@@ -175,21 +157,17 @@ public final class MainActivity extends Activity {
             }
         });
         configureWebView();
-        initGeckoView(); // 初始化 GeckoView(用于 CCTV-3/6/8)
         enterImmersiveMode();
         loadChannel(channelIndex);
     }
 
     @SuppressLint("SetJavaScriptEnabled")
     private void configureWebView() {
-        // 开启 WebView 远程调试:手机 Chrome 地址栏输入 chrome://inspect 可远程连接查看 console/DOM/网络
-        WebView.setWebContentsDebuggingEnabled(true);
         WebSettings settings = webView.getSettings();
         settings.setJavaScriptEnabled(true);
         settings.setDomStorageEnabled(true);
         settings.setDatabaseEnabled(true);
-        // 注意:这里把 UA 设为默认值。CCTV-3/6/8 这三个频道在 loadChannel 里会临时切成 DESKTOP_UA,
-        // 其他频道保持默认移动 UA。不能全频道统一桌面 UA(会导致 CCTV-9 等频道黑屏无法播放)。
+        // 全部频道使用系统默认移动 UA(CCTV-3/6/8 已移除)
         settings.setUserAgentString(null);
         settings.setLoadsImagesAutomatically(true);
         settings.setBlockNetworkImage(false);
@@ -202,9 +180,6 @@ public final class MainActivity extends Activity {
             settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
         }
 
-        // 启用 WebView 硬件加速(默认开启,显式确保);MSE/blob URL 视频需要硬件合成
-        // 注意:MuMu 等 x86 模拟器无硬件 H.264 解码器,会导致"有声音没画面",这是模拟器限制,
-        // 真实 ARM 电视盒子有硬件解码器,不受影响。
         webView.setLayerType(View.LAYER_TYPE_HARDWARE, null);
         // 允许在 file: 协议下访问内容(某些缓存/本地资源场景需要)
         settings.setAllowFileAccess(true);
@@ -223,25 +198,6 @@ public final class MainActivity extends Activity {
             public void onPageStarted(WebView view, String url, Bitmap favicon) {
                 super.onPageStarted(view, url, favicon);
                 updateDebugPanel("onPageStarted → " + shortenUrl(url), null);
-                // 兜底防御:如果 CCTV 重定向到了移动端空白页(尽管我们已设置桌面 UA),
-                // 立刻重新加载当前频道的官方桌面 URL,并附加 User-Agent HTTP 头(强上双保险)。
-                // 典型恶意重定向:m.yangshipin.cn/static/empty.html(版权敏感频道 CCTV-3/6/8)
-                if (url != null && url.contains("yangshipin.cn/static/empty")) {
-                    Channel cur = ChannelCatalog.CHANNELS.get(channelIndex);
-                    Log.w("CCTV-TV", "被 CCTV 重定向到 " + url + " → 重新加载桌面版 " + cur.officialUrl);
-                    updateDebugPanel("REDIRECT_BLOCKED", "检测到被重定向到 mobile 空页\n正在以桌面 UA 重载:" + shortenUrl(cur.officialUrl));
-                    java.util.Map<String, String> headers = new java.util.HashMap<>();
-                    headers.put("User-Agent",
-                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36");
-                    headers.put("Referer", "https://tv.cctv.com/");
-                    view.stopLoading();
-                    view.loadUrl(cur.officialUrl, headers);
-                    return; // 不要跑下面的 CSS/补丁注入,等重新 load 的 onPageStarted
-                }
-                // 0) 最最早期:浏览器环境伪装(必须在所有其他注入之前)
-                //    WebView 原生没有 window.chrome,CCTV 播放器检测到缺失就激活 video_protect(只放声音不放画面)
-                //    必须比 injectDocumentWritePatch/injectM3u8Capture/injectFastLoading/injectAutoFullscreen 都早
-                injectBrowserEnvironment(view, needsDesktopUA(url));
                 // 1) 最早期:document.write polyfill(必须在任何页面 JS 之前注入,否则晚了)
                 //    Chromium 53+ 起对"parser-blocking + cross-site + document.write 插入的<script>"
                 //    在 2G/慢网下直接不执行(2G Intervention)。CCTV 的播放器启动链里有用
@@ -331,61 +287,6 @@ public final class MainActivity extends Activity {
     }
 
     /**
-     * 浏览器环境伪装(核心修复"有声音无画面"):
-     *  ① 注入 window.chrome 对象 — WebView 原生没有,CCTV 播放器检测缺失后激活 video_protect(纯音频模式)
-     *  ② 桌面 UA 频道覆盖 navigator.platform → "Win32" — UA 说 Windows 但 platform 还是 Linux,不一致会降级
-     *  ③ 覆盖 navigator.webdriver → false — 防止被检测为自动化测试工具
-     *  ④ 覆盖 navigator.vendor → "Google Inc." + 添加 navigator.userAgentData(Client Hints)
-     *  ⑤ 覆盖 MediaSource.isTypeSupported() 对视频 codec 一律返回 true + 修复 addSourceBuffer codec
-     *    WebView 可能对某些 H.264 profile 返回 false,导致播放器认为不支持视频降级为纯音频
-     */
-    private void injectBrowserEnvironment(WebView view, boolean isDesktopUA) {
-        String platform = isDesktopUA ? "Win32" : "Linux armv8l";
-        String uaDataPlatform = isDesktopUA ? "Windows" : "Android";
-        String uaDataMobile = isDesktopUA ? "false" : "true";
-        String js =
-                "(function(){" +
-                "  if(window.__cctvEnvPatched)return;" +
-                "  window.__cctvEnvPatched=true;" +
-                // ① 注入 window.chrome 对象(最关键)
-                "  if(!window.chrome){" +
-                "    window.chrome={};" +
-                "    window.chrome.runtime={};" +
-                "    window.chrome.app={isInstalled:false};" +
-                "    window.chrome.csi=function(){return{}};" +
-                "    window.chrome.loadTimes=function(){return{}};" +
-                "  }" +
-                // ② 覆盖 navigator.platform
-                "  try{Object.defineProperty(navigator,'platform',{get:function(){return '" + platform + "';},configurable:true});}catch(e){}" +
-                // ③ 覆盖 navigator.webdriver → false
-                "  try{Object.defineProperty(navigator,'webdriver',{get:function(){return false;},configurable:true});}catch(e){}" +
-                // ④ 覆盖 navigator.vendor + 添加 navigator.userAgentData
-                "  try{Object.defineProperty(navigator,'vendor',{get:function(){return 'Google Inc.';},configurable:true});}catch(e){}" +
-                "  try{if(!navigator.userAgentData){" +
-                "    Object.defineProperty(navigator,'userData',{get:function(){return undefined;},configurable:true});" +
-                "    Object.defineProperty(navigator,'userAgentData',{" +
-                "      get:function(){return {brands:[{brand:'Chromium',version:'126'},{brand:'Google Chrome',version:'126'}],mobile:" + uaDataMobile + ",platform:'" + uaDataPlatform + "'};" +
-                "      },configurable:true" +
-                "    });" +
-                "  }}catch(e){}" +
-                // ⑤ 覆盖 MediaSource.isTypeSupported() + 修复 addSourceBuffer codec
-                "  if(window.MediaSource){" +
-                "    var origITS=MediaSource.isTypeSupported.bind(MediaSource);" +
-                "    MediaSource.isTypeSupported=function(type){" +
-                "      if(/video/i.test(type)&&/avc1|hvc1|hev1|mp4|webm/i.test(type))return true;" +
-                "      return origITS(type);" +
-                "    };" +
-                "    var origASB=MediaSource.prototype.addSourceBuffer;" +
-                "    MediaSource.prototype.addSourceBuffer=function(type){" +
-                "      var fixed=String(type).replace(/avc1\\.64[0-9a-fA-F]{4}/g,'avc1.640028');" +
-                "      return origASB.call(this,fixed);" +
-                "    };" +
-                "  }" +
-                "})()";
-        view.evaluateJavascript(js, null);
-    }
-
-    /**
      * onPageStarted 最早期注入:hook document.write,把
      * document.write('<script src="跨站URL">...</script>') 转成
      * document.createElement('script') 异步插入。
@@ -445,12 +346,11 @@ public final class MainActivity extends Activity {
     }
 
     /**
-     * 三路捕获 m3u8 URL(黑屏兜底的关键前置):
-     *  1) XHR:hook open 记 URL,hook send 后用 onload + addEventListener('load'/'readystatechange') 三重拦截
-     *     (原来只 hook onreadystatechange,但 liveplayer.js 用 onload,VDN 返回的 m3u8 从来没被捕获)
-     *  2) fetch:拦截 VDN fetch 的 json()/text() 响应,从 body 中正则提取 m3u8
-     *  3) livePlayerObjs 轮询:每 500ms 从播放器对象内部直接读 m3u8 URL(兜底兜底)
-     * VDN URL 匹配从 'vdn/live' 扩大为 'vdn'(覆盖 vdnx/vdnxbk/vdn 三个端点)。
+     * hook XMLHttpRequest,捕获 m3u8 URL。
+     * HLSP2P 的 m3u8 请求在 Web Worker 里发(shouldInterceptRequest 可能拦不到),
+     * 但 VDN API(返回 m3u8 URL 的接口)是从主线程发的 XHR。
+     * VDN 响应 JSON 的 streamUrl 字段包含 m3u8 URL,用正则提取存到 window.__cctvM3u8Url。
+     * 白屏检测时如果 shouldInterceptRequest 没拦到,会从 window.__cctvM3u8Url 获取。
      */
     private void injectM3u8Capture(WebView view) {
         String js =
@@ -458,19 +358,6 @@ public final class MainActivity extends Activity {
                 "  if(window.__cctvM3u8Hook)return;" +
                 "  window.__cctvM3u8Hook=true;" +
                 "  window.__cctvM3u8Url=null;" +
-                // ---- 工具函数:从任意文本中提取 m3u8 URL ----
-                "  function extractM3u8(text){" +
-                "    if(!text||typeof text!=='string')return null;" +
-                "    var m=text.match(/https?:\\/\\/[^\\s\"'<>|]+\\.m3u8[^\\s\"'<>|]*/);" +
-                "    return m?m[0]:null;" +
-                "  }" +
-                "  function saveM3u8(url,source){" +
-                "    if(url&&!window.__cctvM3u8Url){" +
-                "      window.__cctvM3u8Url=url;" +
-                "      console.log('[CCTV-M3U8] '+source+': '+url);" +
-                "    }" +
-                "  }" +
-                // ---- 1) XHR hook ----
                 "  var origOpen=XMLHttpRequest.prototype.open;" +
                 "  var origSend=XMLHttpRequest.prototype.send;" +
                 "  XMLHttpRequest.prototype.open=function(method,url){" +
@@ -481,100 +368,39 @@ public final class MainActivity extends Activity {
                 "    var self=this;" +
                 "    var reqUrl=self.__cctvReqUrl||'';" +
                 // 直接拦截 m3u8 请求(主线程发的)
-                "    if(reqUrl.indexOf('.m3u8')>=0){" +
-                "      saveM3u8(reqUrl,'XHR direct');" +
+                "    if(reqUrl.indexOf('.m3u8')>=0&&!window.__cctvM3u8Url){" +
+                "      window.__cctvM3u8Url=reqUrl;" +
+                "      console.log('[CCTV-M3U8] captured from XHR: '+reqUrl);" +
                 "    }" +
-                // VDN API 响应拦截(扩大匹配:vdn 覆盖 vdnx/vdnxbk/vdn)
-                "    var isVdn=reqUrl.indexOf('vdn')>=0||reqUrl.indexOf('getstream')>=0;" +
-                "    if(isVdn){" +
-                // 三重拦截:onload + addEventListener('load') + addEventListener('readystatechange')
-                // (liveplayer.js 用 onload,不用 onreadystatechange,原来只 hook onreadystatechange 导致漏捕)
-                "      var origOnload=self.onload;" +
-                "      self.onload=function(){" +
-                "        var m=extractM3u8(self.responseText);" +
-                "        if(m)saveM3u8(m,'XHR onload');" +
-                "        if(origOnload)return origOnload.apply(self,arguments);" +
-                "      };" +
-                "      self.addEventListener('load',function(){" +
-                "        var m=extractM3u8(self.responseText);" +
-                "        if(m)saveM3u8(m,'XHR load evt');" +
-                "      });" +
-                "      self.addEventListener('readystatechange',function(){" +
-                "        if(self.readyState===4){" +
-                "          var m=extractM3u8(self.responseText);" +
-                "          if(m)saveM3u8(m,'XHR rsc evt');" +
-                "        }" +
-                "      });" +
-                // 保留原来的 onreadystatechange hook(兼容直接赋值的写法)
+                // 拦截 VDN API 响应,从 JSON 中提取 m3u8 URL
+                "    if(reqUrl.indexOf('vdn/live')>=0||reqUrl.indexOf('getstream')>=0){" +
                 "      var origRSC=self.onreadystatechange;" +
                 "      self.onreadystatechange=function(){" +
-                "        if(self.readyState===4){" +
-                "          var m=extractM3u8(self.responseText);" +
-                "          if(m)saveM3u8(m,'XHR rsc hook');" +
+                "        if(self.readyState===4&&self.responseText&&!window.__cctvM3u8Url){" +
+                "          try{" +
+                "            var m=self.responseText.match(/https?:\\/\\/[^\\s\"'<>]+\\.m3u8[^\\s\"'<>]*/);" +
+                "            if(m){" +
+                "              window.__cctvM3u8Url=m[0];" +
+                "              console.log('[CCTV-M3U8] captured from VDN API: '+m[0]);" +
+                "            }" +
+                "          }catch(e){}" +
                 "        }" +
                 "        if(origRSC)return origRSC.apply(self,arguments);" +
                 "      };" +
                 "    }" +
-                "    return origSend.apply(self,arguments);" +
+                "    return origSend.apply(this,arguments);" +
                 "  };" +
-                // ---- 2) fetch hook ----
+                // 也 hook fetch(部分新版播放器可能用 fetch 而非 XHR)
                 "  if(window.fetch){" +
                 "    var origFetch=window.fetch;" +
                 "    window.fetch=function(input,init){" +
                 "      var url=typeof input==='string'?input:(input&&input.url||'');" +
-                "      if(url.indexOf('.m3u8')>=0)saveM3u8(url,'fetch direct');" +
-                // VDN fetch:拦截 response.json()/text()
-                "      var isVdn=url.indexOf('vdn')>=0||url.indexOf('getstream')>=0;" +
-                "      if(isVdn){" +
-                "        return origFetch.apply(this,arguments).then(function(resp){" +
-                "          var origJson=resp.json.bind(resp);" +
-                "          var origText=resp.text.bind(resp);" +
-                "          resp.json=function(){return origJson().then(function(data){" +
-                "            var m=extractM3u8(JSON.stringify(data));" +
-                "            if(m)saveM3u8(m,'fetch json');" +
-                "            return data;" +
-                "          });};" +
-                "          resp.text=function(){return origText().then(function(text){" +
-                "            var m=extractM3u8(text);" +
-                "            if(m)saveM3u8(m,'fetch text');" +
-                "            return text;" +
-                "          });};" +
-                "          return resp;" +
-                "        });" +
+                "      if(url.indexOf('.m3u8')>=0&&!window.__cctvM3u8Url){" +
+                "        window.__cctvM3u8Url=url;" +
+                "        console.log('[CCTV-M3U8] captured from fetch: '+url);" +
                 "      }" +
                 "      return origFetch.apply(this,arguments);" +
                 "    };" +
-                "  }" +
-                // ---- 3) livePlayerObjs 轮询:每 500ms 从播放器对象内部读 m3u8 ----
-                "  if(!window.__cctvPlayerPoll){" +
-                "    window.__cctvPlayerPoll=true;" +
-                "    function pollPlayerObjs(){" +
-                "      if(window.__cctvM3u8Url){return;}" +
-                // 遍历已知的播放器全局对象
-                "      var objs=[window.playerObj,window.cntvPlayer,window.liveplayer,window.livePlayer,window.HLSP2P];" +
-                "      for(var i=0;i<objs.length;i++){" +
-                "        var o=objs[i];" +
-                "        if(!o)continue;" +
-                "        var m3u8=o.m3u8||o.m3u8Url||o.streamUrl||o.url||o.src||" +
-                "                 (o.options&&o.options.m3u8)||(o.config&&o.config.m3u8);" +
-                "        if(m3u8&&typeof m3u8==='string'&&m3u8.indexOf('.m3u8')>=0){" +
-                "          saveM3u8(m3u8,'playerObj poll');" +
-                "          return;" +
-                "        }" +
-                // 深度遍历一层属性
-                "        for(var k in o){" +
-                "          try{" +
-                "            var v=o[k];" +
-                "            if(typeof v==='string'&&v.indexOf('.m3u8')>=0){" +
-                "              saveM3u8(v,'playerObj.'+k);" +
-                "              return;" +
-                "            }" +
-                "          }catch(e){}" +
-                "        }" +
-                "      }" +
-                "      setTimeout(pollPlayerObjs,500);" +
-                "    }" +
-                "    setTimeout(pollPlayerObjs,500);" +
                 "  }" +
                 "})()";
         view.evaluateJavascript(js, null);
@@ -670,7 +496,7 @@ public final class MainActivity extends Activity {
                 "        }" +
                 "      }" +
                 "    }catch(e){}" +
-                "    try{if(v.webkitRequestFullscreen&&!v.__cctvFsRequested&&v.videoWidth>0){v.__cctvFsRequested=true;v.webkitRequestFullscreen();}}catch(e){}" +
+                "    try{if(v.webkitRequestFullscreen&&!v.__cctvFsRequested){v.__cctvFsRequested=true;v.webkitRequestFullscreen();}}catch(e){}" +
                 "    v.style.position='fixed';" +
                 "      v.style.display='block';" +
                 "      v.style.visibility='visible';" +
@@ -829,381 +655,6 @@ public final class MainActivity extends Activity {
         webView.evaluateJavascript(js, null);
     }
 
-    /**
-     * 判断频道是否需要用桌面 UA。
-     * CCTV-3 综艺 / CCTV-6 电影 / CCTV-8 电视剧:移动端 UA 会被 CCTV 服务器端直接 302 重定向
-     * 到 https://m.yangshipin.cn/static/empty.html(刻意空白的版权引导页),必须用桌面 UA 才能加载
-     * 正确的带播放器的桌面版页面。其他频道(如 CCTV-9)用桌面 UA 会黑屏播放不了。
-     */
-    private static boolean needsDesktopUA(String officialUrl) {
-        if (officialUrl == null) return false;
-        String u = officialUrl.toLowerCase(Locale.ROOT);
-        return u.contains("/cctv3") || u.contains("/cctv6") || u.contains("/cctv8");
-    }
-
-    /**
-     * 初始化 GeckoView(Firefox 引擎),用于 CCTV-3/6/8。
-     * GeckoView 自带:
-     *  - Widevine DRM(解密加密视频流)
-     *  - 完整 MediaSource(支持 MSE blob URL)
-     *  - 完整视频解码器(不依赖系统 WebView)
-     *  - UA 自定义(桌面 UA)
-     *  - HTML5 全屏(CCTV 播放器的全屏按钮直接可用)
-     *  - 自动播放(不需要 muted hack)
-     */
-    @SuppressLint("SetJavaScriptEnabled")
-    private void initGeckoView() {
-        geckoView = findViewById(R.id.gecko_view);
-        try {
-            // 创建 GeckoRuntime,配置 JS + DRM(GeckoView 130 的 UA 覆盖和自动播放通过 SessionSettings 设置)
-            GeckoRuntimeSettings.Builder builder = new GeckoRuntimeSettings.Builder()
-                    .javaScriptEnabled(true)
-                    .configFilePath(getFilesDir().getAbsolutePath() + "/geckoview-config.json");
-            geckoRuntime = GeckoRuntime.create(this, builder.build());
-            if (geckoRuntime == null) {
-                Log.e("CCTV-TV", "GeckoRuntime 创建失败,回退到 WebView");
-                geckoReady = false;
-                return;
-            }
-            // 创建 GeckoSession
-            geckoSession = new GeckoSession();
-            geckoSession.getSettings().setUserAgentMode(GeckoSessionSettings.USER_AGENT_MODE_DESKTOP);
-            geckoSession.getSettings().setViewportMode(GeckoSessionSettings.VIEWPORT_MODE_DESKTOP);
-            geckoSession.getSettings().setUserAgentOverride(DESKTOP_UA);
-            geckoSession.getSettings().setAllowJavascript(true);
-
-            // GeckoView 全尺寸 + 移除动态工具栏高度(防止挤压内容区域)
-            geckoView.setDynamicToolbarMaxHeight(0);
-            // Session 设置: DISPLAY_MODE_FULLSCREEN 告诉 GeckoView 这是全屏应用模式
-            // 影响 Gecko 引擎内部的 viewport 和 滚动条行为
-            geckoSession.getSettings().setDisplayMode(GeckoSessionSettings.DISPLAY_MODE_FULLSCREEN);
-            geckoSession.getSettings().setSuspendMediaWhenInactive(false);
-
-            // Content delegate: 处理全屏 + 页面标题(带诊断回传)
-            geckoSession.setContentDelegate(new GeckoSession.ContentDelegate() {
-                @Override
-                public void onFullScreen(GeckoSession session, boolean fullScreen) {
-                    Log.i("CCTV-TV", "GeckoView HTML5 全屏回调: " + fullScreen);
-                    if (fullScreen) {
-                        enterImmersiveMode();
-                    }
-                }
-
-                // JS 里通过 document.title 把诊断信息回传到 Java:
-                // 格式: "[DIAG] ..." 开头的就是诊断信息
-                // 双路输出: 1) 打到 logcat; 2) 显示到屏幕右上角 progressHint,用户无需adb即可查看
-                @Override
-                public void onTitleChange(GeckoSession session, String title) {
-                    if (title != null && title.startsWith("[DIAG]")) {
-                        String diag = title.substring(7);
-                        Log.i("CCTV-TV", "JS诊断 → " + diag);
-                        // 显示到屏幕右上角(不自动消失,方便看;新的诊断会覆盖)
-                        handler.removeCallbacks(hideProgressHint);
-                        progressHint.setVisibility(View.VISIBLE);
-                        progressHint.setText("诊断: " + diag);
-                    }
-                }
-
-                @Override
-                public void onFirstComposite(GeckoSession session) {
-                    Log.i("CCTV-TV", "GeckoView onFirstComposite → 重新触发早期引导");
-                    injectGeckoEarlyBootstrap();
-                }
-
-                @Override
-                public void onFirstContentfulPaint(GeckoSession session) {
-                    Log.i("CCTV-TV", "GeckoView onFirstContentfulPaint → 重新触发早期引导");
-                    injectGeckoEarlyBootstrap();
-                }
-
-                @Override
-                public void onCloseRequest(GeckoSession session) {
-                }
-            });
-
-            // Progress delegate: 页面加载进度
-            geckoSession.setProgressDelegate(new GeckoSession.ProgressDelegate() {
-                @Override
-                public void onPageStart(GeckoSession session, String url) {
-                    updateDebugPanel("GeckoView加载", shortenUrl(url));
-                    Log.i("CCTV-TV", "GeckoView onPageStart → " + url);
-                    // 最早期注入:浏览器环境伪装(window.chrome等,解决CCTV video_protect导致videoWidth=0)
-                    // + 启动长期轮询(60秒,每100ms一次:暴力布局+智能play+全屏按钮)
-                    injectGeckoEarlyBootstrap();
-                }
-
-                @Override
-                public void onPageStop(GeckoSession session, boolean success) {
-                    updateDebugPanel("GeckoView就绪", success ? "加载完成" : "加载失败");
-                    Log.i("CCTV-TV", "GeckoView onPageStop → success=" + success);
-                    // 保险:页面加载完再推一次长期轮询(防止onPageStart注入时JS引擎还没就绪)
-                    injectGeckoEarlyBootstrap();
-                }
-            });
-
-            // Navigation delegate: 拦截非 CCTV URL
-            geckoSession.setNavigationDelegate(new GeckoSession.NavigationDelegate() {
-                @Override
-                public void onLocationChange(GeckoSession session, String url,
-                        java.util.List<org.mozilla.geckoview.GeckoSession.PermissionDelegate.ContentPermission> perms,
-                        Boolean hasChanged) {
-                    if (url != null && url.contains("yangshipin.cn/static/empty")) {
-                        Log.w("CCTV-TV", "GeckoView 被重定向到空页,重新加载");
-                        Channel cur = ChannelCatalog.CHANNELS.get(channelIndex);
-                        geckoSession.loadUri(cur.officialUrl);
-                    }
-                }
-            });
-
-            geckoSession.open(geckoRuntime);
-            geckoView.setSession(geckoSession);
-            geckoReady = true;
-            Log.i("CCTV-TV", "GeckoView 初始化成功");
-        } catch (Exception e) {
-            Log.e("CCTV-TV", "GeckoView 初始化失败: " + e.getMessage(), e);
-            geckoReady = false;
-        }
-    }
-
-    /**
-     * GeckoView 早期启动脚本(在 onPageStart 第一时间注入)。
-     *
-     * 包含两个部分(必须早期注入,不能等 onPageStop):
-     *  1. 浏览器环境伪装(window.chrome / navigator.platform / MediaSource codec 兼容)
-     *     → 解决 CCTV video_protect 模式:缺少 window.chrome 时播放器只放声音不放画面
-     *     → 之前诊断 videoWidth=0 的根因就是这个
-     *  2. 启动 60 秒长期轮询(setInterval 100ms),每轮:
-     *     a) DOM 操作暴力布局:video 祖先链清样式+body 非祖先链隐藏+video fixed 全屏
-     *     b) 智能自动播放:等 videoWidth>0 或 readyState>=2 再 muted play+2s取消muted
-     *     c) 持续找全屏按钮 #player_fullscreen_no_player 点击
-     *     d) 诊断信息每 10 轮更新一次 document.title 回传到 Java
-     *
-     * 设计思想(最后一次机会,必须解决):
-     *  - 之前的 CSS 字符串选择器(body>* 等)太脆弱,CCTV DOM 结构一变就失效。
-     *    改成 JS DOM 操作:找到 video → 向上遍历所有祖先清样式+拉满 → body 其他直接子节点隐藏
-     *  - 之前只调用一次就结束,CCTV 的 video/按钮是流连接后动态插入的(10+秒)
-     *    改成 setInterval 长期轮询 60 秒,一直等它出现
-     *  - 之前一找到 video 就 play(),但 readyState=0 时 play() 必失败
-     *    改成等 videoWidth>0 或 readyState>=2(有数据了)再 play
-     *  - 环境伪装必须最早注入,否则 CCTV 的初始化代码已经读了 navigator.platform/webdriver,
-     *    发现是 Gecko 就进 video_protect,videoWidth 永远是 0
-     */
-    private void injectGeckoEarlyBootstrap() {
-        if (geckoSession == null) return;
-        String js =
-                "(function(){" +
-                "  try{" +
-                // ========== 第1部分:浏览器环境伪装(必须早期,防CCTV video_protect) ==========
-                "  if(!window.__cctvEnvPatched){" +
-                "    window.__cctvEnvPatched=true;" +
-                // window.chrome 对象(CCTV检测缺失就进video_protect只放声音)
-                "    if(!window.chrome){" +
-                "      window.chrome={runtime:{},app:{isInstalled:false},csi:function(){return {};},loadTimes:function(){return {};}};" +
-                "    }" +
-                // navigator 伪装(Win32 桌面)
-                "    try{Object.defineProperty(navigator,'platform',{get:function(){return 'Win32';},configurable:true});}catch(e){}" +
-                "    try{Object.defineProperty(navigator,'webdriver',{get:function(){return false;},configurable:true});}catch(e){}" +
-                "    try{Object.defineProperty(navigator,'vendor',{get:function(){return 'Google Inc.';},configurable:true});}catch(e){}" +
-                "    try{if(!navigator.userAgentData)Object.defineProperty(navigator,'userAgentData',{get:function(){return{brands:[{brand:'Chromium',version:'126'},{brand:'Google Chrome',version:'126'}],mobile:false,platform:'Windows'};},configurable:true});}catch(e){}" +
-                // MediaSource codec 兼容(avc1.64XXXX High profile降级)
-                "    if(window.MediaSource){" +
-                "      var oITS=MediaSource.isTypeSupported.bind(MediaSource);" +
-                "      MediaSource.isTypeSupported=function(t){if(/video/i.test(t)&&/avc1|hvc1|hev1|mp4|webm/i.test(t))return true;return oITS(t);};" +
-                "      var oASB=MediaSource.prototype.addSourceBuffer;" +
-                "      MediaSource.prototype.addSourceBuffer=function(t){return oASB.call(this,String(t).replace(/avc1\\.64[0-9a-fA-F]{4}/g,'avc1.640028'));};" +
-                "    }" +
-                "  }" +
-                // ========== 第2部分:60秒长期轮询 ==========
-                "  if(!window.__cctvGvLoop){" +
-                "    window.__cctvGvLoop=true;" +
-                "    var cnt=0,maxTick=600,diag='启动';var apDone=false,fsDone=false,unmuteSet=false,redirected=false;" +
-                // 判断当前是否已经在播放器页面(URL包含播放器关键字,不用再跳转)
-                "    var curUrl=(location.hostname+location.pathname).toLowerCase();" +
-                "    var isPlayerPage=/player\\.|cntv\\.cn|ysp\\.cn|h5player|liveplayer/.test(curUrl);" +
-                "    function diagPush(v,diags){" +
-                "      if(!v){diags.push('未找到video');return;}" +
-                "      diags.push('v:p='+v.paused+',m='+v.muted+',rs='+v.readyState+',vw='+v.videoWidth+',vh='+v.videoHeight);" +
-                "    }" +
-                "    var loopTimer=setInterval(function(){" +
-                "      try{" +
-                "        cnt++;" +
-                "        var diags=[];" +
-                // 0) 如果不在播放器页面,找iframe跳转播放器页
-                "        if(!isPlayerPage&&!redirected){" +
-                "          var ifs=document.querySelectorAll('iframe');" +
-                "          var targetIframe=null;" +
-                "          for(var i=0;i<ifs.length;i++){" +
-                "            var s=ifs[i].src;" +
-                "            if(s&&/player\\.|cntv\\.cn|ysp\\.cn|h5player|liveplayer|video|live/i.test(s)){" +
-                "              targetIframe=s;break;" +
-                "            }" +
-                "          }" +
-                "          if(targetIframe){" +
-                "            redirected=true;" +
-                "            diags.push('跳播放器页:'+targetIframe.substring(0,60));" +
-                "            try{ document.title='[DIAG] 跳:'+targetIframe.substring(0,40);}catch(_){}" +
-                "            clearInterval(loopTimer);" +
-                "            location.replace(targetIframe);" +
-                "            return;" +
-                "          } else { diags.push('等iframe('+ifs.length+')'); }" +
-                "        }" +
-                // a) 找 video
-                "        var v=document.querySelector('video');" +
-                "        if(v){" +
-                // b) DOM 操作暴力布局(比CSS选择器可靠):video祖先链拉满+body非祖先隐藏+video fixed
-                "          try{" +
-                // 收集祖先链
-                "            var anc=[];var p=v.parentNode;while(p&&p!==document.body&&p!==document){anc.push(p);p=p.parentNode;}" +
-                // 祖先全部清样式拉满(用style.setProperty + !important覆盖内联/外部样式)
-                "            for(var i=0;i<anc.length;i++){" +
-                "              try{" +
-                "                var el=anc[i];" +
-                "                el.style.setProperty('display','block','important');" +
-                "                el.style.setProperty('width','100%','important');" +
-                "                el.style.setProperty('height','100%','important');" +
-                "                el.style.setProperty('margin','0','important');" +
-                "                el.style.setProperty('padding','0','important');" +
-                "                el.style.setProperty('overflow','visible','important');" +
-                "                el.style.setProperty('background','#000','important');" +
-                "                el.style.setProperty('position','static','important');" +
-                "                el.style.setProperty('transform','none','important');" +
-                "                el.style.setProperty('visibility','visible','important');" +
-                "                el.style.setProperty('opacity','1','important');" +
-                "              }catch(_){}" +
-                "            }" +
-                // body 直接子节点:不在祖先链的隐藏
-                "            if(document.body){" +
-                "              var bcs=document.body.children;" +
-                "              for(var j=0;j<bcs.length;j++){" +
-                "                try{" +
-                "                  var bc=bcs[j];" +
-                "                  if(bc!==v&&anc.indexOf(bc)===-1&&!bc.contains(v)){" +
-                "                    bc.style.setProperty('display','none','important');" +
-                "                    bc.style.setProperty('visibility','hidden','important');" +
-                "                    bc.style.setProperty('height','0','important');" +
-                "                    bc.style.setProperty('width','0','important');" +
-                "                    bc.style.setProperty('overflow','hidden','important');" +
-                "                    bc.style.setProperty('margin','0','important');" +
-                "                    bc.style.setProperty('padding','0','important');" +
-                "                  }" +
-                "                }catch(_){}" +
-                "              }" +
-                // html/body 拉满
-                "              document.body.style.setProperty('width','100vw','important');" +
-                "              document.body.style.setProperty('height','100vh','important');" +
-                "              document.body.style.setProperty('margin','0','important');" +
-                "              document.body.style.setProperty('padding','0','important');" +
-                "              document.body.style.setProperty('overflow','hidden','important');" +
-                "              document.body.style.setProperty('background','#000','important');" +
-                "            }" +
-                "            if(document.documentElement){" +
-                "              document.documentElement.style.setProperty('width','100vw','important');" +
-                "              document.documentElement.style.setProperty('height','100vh','important');" +
-                "              document.documentElement.style.setProperty('margin','0','important');" +
-                "              document.documentElement.style.setProperty('padding','0','important');" +
-                "              document.documentElement.style.setProperty('overflow','hidden','important');" +
-                "              document.documentElement.style.setProperty('background','#000','important');" +
-                "            }" +
-                // video 自己 fixed 全屏 z-index 最高
-                "            v.style.setProperty('display','block','important');" +
-                "            v.style.setProperty('position','fixed','important');" +
-                "            v.style.setProperty('left','0','important');" +
-                "            v.style.setProperty('top','0','important');" +
-                "            v.style.setProperty('width','100vw','important');" +
-                "            v.style.setProperty('height','100vh','important');" +
-                "            v.style.setProperty('z-index','2147483647','important');" +
-                "            v.style.setProperty('margin','0','important');" +
-                "            v.style.setProperty('padding','0','important');" +
-                "            v.style.setProperty('background','#000','important');" +
-                "            v.style.setProperty('object-fit','contain','important');" +
-                "            v.style.setProperty('visibility','visible','important');" +
-                "            v.style.setProperty('opacity','1','important');" +
-                "            v.style.setProperty('transform','none','important');" +
-                "          }catch(lyErr){ diags.push('布局异常:'+lyErr.message); }" +
-                // c) 智能自动播放:等有数据再play
-                "          try{" +
-                "            if(!apDone&&(v.videoWidth>0||v.readyState>=2)){" +
-                "              if(v.paused){" +
-                "                v.muted=true;" +
-                "                var pr=v.play();" +
-                "                if(pr&&pr.then){" +
-                "                  pr.then(function(){" +
-                "                    apDone=true;diags.push('playOK');" +
-                "                    if(!unmuteSet){unmuteSet=true;setTimeout(function(){v.muted=false;},2000);}" +
-                "                  }).catch(function(err){ diags.push('playFAIL:'+err.message); });" +
-                "                } else {" +
-                "                  apDone=true;diags.push('playOK-np');" +
-                "                  if(!unmuteSet){unmuteSet=true;setTimeout(function(){v.muted=false;},2000);}" +
-                "                }" +
-                "              } else { apDone=true;diags.push('已在播'); }" +
-                "            }" +
-                "          }catch(plErr){ diags.push('play异常:'+plErr.message); }" +
-                "          diagPush(v,diags);" +
-                "        } else { diags.push('未找到video'); }" +
-                // d) 持续找全屏按钮点击(CCTV自己的网页全屏按钮,img元素用户提供的ID)
-                "        try{" +
-                "          if(!fsDone){" +
-                "            var fsb=document.querySelector('#player_fullscreen_no_player');" +
-                "            if(fsb){" +
-                "              fsDone=true;" +
-                "              fsb.click();" +
-                "              diags.push('全屏OK');" +
-                "            }" +
-                "          }" +
-                "        }catch(fsErr){ diags.push('全屏异常:'+fsErr.message); }" +
-                // e) 诊断:每10轮更新title(避免频繁写title干扰CCTv的JS)
-                "        if(cnt%10===0){" +
-                "          var stat='轮询'+cnt+'s '+(apDone?'播:OK':'播:等待')+' '+(fsDone?'全屏:OK':'全屏:等待')+' → '+diags.join(' ');" +
-                "          try{ document.title='[DIAG] '+stat; }catch(_){}" +
-                "        }" +
-                // 超时退出
-                "        if(cnt>=maxTick){ clearInterval(loopTimer); }" +
-                "      }catch(topErr){ try{document.title='[DIAG] 轮询ERR:'+topErr.message;}catch(z){} clearInterval(loopTimer); }" +
-                "    },100);" +
-                "  }" +
-                "  }catch(e5){ try{ document.title='[DIAG] BOOTSTRAP-ERR:'+e5.message; }catch(z){} }" +
-                "})()";
-        geckoSession.loadUri("javascript:" + js);
-        Log.i("CCTV-TV", "GeckoView 注入环境伪装+60秒轮询(早期onPageStart)");
-    }
-
-    /**
-     * 用 WebView + 桌面 UA 加载 CCTV-3/6/8 频道。
-     *
-     * 为什么不用 GeckoView 了?(2026-08-01 最后一次定位)
-     *  GeckoView 130 没有 evaluateJavascript/executeScript API,只能用 loadUri("javascript:...") 注入脚本。
-     *  但 CCTV 官方页面启用了严格 CSP(Content-Security-Policy),阻止 inline script 和 javascript: URL。
-     *  结果就是:页面能正常渲染,但所有注入的 JS(CSS/自动播放/全屏跳转)全部被 CSP 静默丢弃,完全不生效。
-     *  WebView 虽然没有 Widevine DRM + 完整解码器,但:
-     *   1. WebView 的 evaluateJavascript 不受页面 CSP 限制,注入 JS 100% 生效
-     *   2. 有 window.chrome 伪装 + hls.js 兜底播放 + CSS 全屏等一整套经过验证的 hack
-     *   3. MuMu(x86) 模拟器无硬件 H.264 解码器导致"有声音无画面",但真实 ARM 电视盒子有,正常
-     *  真实目标是 ARM 电视盒子,所以回到 WebView 是最可靠方案。
-     *  GeckoView 保留在布局中(GONE,隐藏),等将来升级到有 evaluateJavascript 的 GeckoView 版本再启用。
-     */
-    private void loadGeckoChannel(String url) {
-        switchToWebView();
-        WebSettings settings = webView.getSettings();
-        settings.setUserAgentString(DESKTOP_UA);
-        Log.i("CCTV-TV", "WebView 桌面 UA 加载: " + url);
-        webView.loadUrl(url);
-        scheduleWhiteScreenCheck();
-    }
-
-    /**
-     * 切换到 WebView 模式(非 CCTV-3/6/8 频道)。
-     */
-    private void switchToWebView() {
-        if (geckoView != null) {
-            geckoView.setVisibility(View.GONE);
-        }
-        webView.setVisibility(View.VISIBLE);
-        // 停止 GeckoView 加载(节省资源)
-        if (geckoSession != null) {
-            geckoSession.stop();
-        }
-    }
-
     private void loadChannel(int requestedIndex) {
         handler.removeCallbacksAndMessages(null);
         // 切频道时关闭频道列表和数字输入提示
@@ -1226,29 +677,7 @@ public final class MainActivity extends Activity {
         int count = ChannelCatalog.CHANNELS.size();
         channelIndex = ((requestedIndex % count) + count) % count;
         Channel channel = ChannelCatalog.CHANNELS.get(channelIndex);
-        // 关键:在加载前切 UA
-        //  CCTV-3/6/8 → 桌面 Chrome 126(否则服务器端跳空页)
-        //  其他     → 系统默认移动 UA(桌面 UA 会让 CCTV-9 等频道黑屏)
-        // 注意:MuMu(x86)模拟器无硬件 H.264 解码器,桌面 UA 的 HLSP2P 播放器(MSE blob URL)无法解码,
-        // 所以 MuMu 上 CCTV-3/6/8 会有声音没画面。真实 ARM 电视盒子有硬件解码器,不受影响。
-        WebSettings settings = webView.getSettings();
-        if (needsDesktopUA(channel.officialUrl)) {
-            // CCTV-3/6/8:用 GeckoView(Firefox 引擎,内嵌完整浏览器)
-            // GeckoView 自带 Widevine DRM + MediaSource + 完整视频解码器
-            // 不需要安装 Chrome,直接内嵌在 APK 里
-            settings.setUserAgentString(DESKTOP_UA);
-            updateDebugPanel("GeckoView", channel.name + " [桌面UA]");
-            showChannelHint(channel.name);
-            loadGeckoChannel(channel.officialUrl);
-            return;
-        } else {
-            // 其他频道:用 WebView(移动 UA),先切回 WebView 模式
-            switchToWebView();
-            settings.setUserAgentString(null); // null = 回退到系统默认移动 UA
-        }
-        // 切换频道时先显示"加载中"进度提示
-        String uaTag = needsDesktopUA(channel.officialUrl) ? " [桌面UA]" : " [移动UA]";
-        updateDebugPanel("加载中", channel.name + uaTag);
+        updateDebugPanel("加载中", channel.name);
         webView.loadUrl(channel.officialUrl);
         showChannelHint(channel.name);
         // 立即开始白屏倒计时,不依赖 onPageFinished
@@ -1278,7 +707,7 @@ public final class MainActivity extends Activity {
         for (ScheduledFuture<?> f : pendingChecks) f.cancel(false);
         pendingChecks.clear();
         final int gen = loadGeneration;
-        long[] delays = {3000L, 5000L, 8000L, 12000L, 20000L};
+        long[] delays = {5000L, 10000L, 15000L, 20000L, 30000L};
         for (long delay : delays) {
             ScheduledFuture<?> future = scheduler.schedule(() -> {
                 if (gen != loadGeneration) return;
@@ -1361,17 +790,8 @@ public final class MainActivity extends Activity {
                     int start = m3u8Idx + 5;
                     int end = state.indexOf("\n", start);
                     if (end < 0) end = state.indexOf("\\n", start);
-                    if (end < 0) end = state.indexOf("|", start);
                     if (end < 0) end = state.length();
                     String jsM3u8 = state.substring(start, end).trim();
-                    // 去掉首尾引号(BLACK_SCREEN 状态用 | 分隔字段,URL 可能带引号)
-                    while (jsM3u8.startsWith("\"") || jsM3u8.startsWith("'")) {
-                        jsM3u8 = jsM3u8.substring(1);
-                    }
-                    while (jsM3u8.endsWith("\"") || jsM3u8.endsWith("'")) {
-                        jsM3u8 = jsM3u8.substring(0, jsM3u8.length() - 1);
-                    }
-                    jsM3u8 = jsM3u8.trim();
                     if (!jsM3u8.isEmpty() && jsM3u8.startsWith("http")) {
                         capturedM3u8Url = jsM3u8;
                         Log.i("CCTV-TV", "从 JS hook 获取到 m3u8: " + jsM3u8);
@@ -1384,8 +804,8 @@ public final class MainActivity extends Activity {
                         .replace("\\n", "\n")
                         .replace("|", "\n");
                 updateDebugPanel("NO_VIDEO", detail);
-                // 如果 5 秒后还是没有 video 元素,且已拦截到 m3u8,用 hls.js 兜底播放
-                if (elapsedMs >= 5000 && capturedM3u8Url != null && !hlsPlayerInjected) {
+                // 如果 10 秒后还是没有 video 元素,且已拦截到 m3u8,用 hls.js 兜底播放
+                if (elapsedMs >= 10000 && capturedM3u8Url != null && !hlsPlayerInjected) {
                     hlsPlayerInjected = true;
                     updateDebugPanel("HLS_FALLBACK", "无video元素,切换hls.js直连\nm3u8=" + shortenUrl(capturedM3u8Url));
                     injectHlsPlayer(capturedM3u8Url);
@@ -1394,28 +814,7 @@ public final class MainActivity extends Activity {
                 // 有声音无画面:HLSP2P 的 P2P 视频失败,音频正常
                 Log.w("CCTV-TV", "=== 有声音无画面(" + elapsedMs + "ms) ===\n" + state);
                 updateDebugPanel("BLACK_SCREEN", "有声音无画面:HLSP2P的P2P视频失败\n正在切换hls.js兜底...");
-                // 如果 capturedM3u8Url 还是 null,直接从 JS 读一次 window.__cctvM3u8Url
-                if (elapsedMs >= 5000 && capturedM3u8Url == null && !hlsPlayerInjected) {
-                    webView.evaluateJavascript("window.__cctvM3u8Url", m3u8Val -> {
-                        if (gen != loadGeneration) return;
-                        if (m3u8Val != null && !"null".equals(m3u8Val)) {
-                            String url = m3u8Val.toString().trim();
-                            // 去掉首尾引号
-                            while (url.startsWith("\"") || url.startsWith("'")) url = url.substring(1);
-                            while (url.endsWith("\"") || url.endsWith("'")) url = url.substring(0, url.length() - 1);
-                            if (url.startsWith("http") && url.contains(".m3u8")) {
-                                capturedM3u8Url = url;
-                                Log.i("CCTV-TV", "从 window.__cctvM3u8Url 读到: " + url);
-                            }
-                        }
-                        // 读到后立刻触发 hls.js
-                        if (capturedM3u8Url != null && !hlsPlayerInjected) {
-                            hlsPlayerInjected = true;
-                            updateDebugPanel("HLS_FALLBACK", "有声音无画面,切换hls.js直连\nm3u8=" + shortenUrl(capturedM3u8Url));
-                            injectHlsPlayer(capturedM3u8Url);
-                        }
-                    });
-                } else if (elapsedMs >= 5000 && capturedM3u8Url != null && !hlsPlayerInjected) {
+                if (elapsedMs >= 10000 && capturedM3u8Url != null && !hlsPlayerInjected) {
                     hlsPlayerInjected = true;
                     updateDebugPanel("HLS_FALLBACK", "有声音无画面,切换hls.js直连\nm3u8=" + shortenUrl(capturedM3u8Url));
                     injectHlsPlayer(capturedM3u8Url);
@@ -1425,9 +824,9 @@ public final class MainActivity extends Activity {
                 webView.evaluateJavascript(
                         "(function(){var v=document.getElementById('h5player_player')||document.querySelector('video');if(v&&!v.__cctvAutoplayStarted){v.__cctvAutoplayStarted=true;v.muted=true;var p=v.play();if(p&&p.then){p.then(function(){setTimeout(function(){v.muted=false;},2000);}).catch(function(e){v.__cctvAutoplayStarted=false;});}else{setTimeout(function(){v.muted=false;},2000);}}return true;})()",
                         null);
-                // 如果 5 秒后视频还是暂停的,说明 HLSP2P 播放器在 WebView 上跑不起来,
+                // 如果 10 秒后视频还是暂停的,说明 HLSP2P 播放器在 WebView 上跑不起来,
                 // 用 hls.js 兜底直接播放 m3u8
-                if (elapsedMs >= 5000 && capturedM3u8Url != null && !hlsPlayerInjected) {
+                if (elapsedMs >= 10000 && capturedM3u8Url != null && !hlsPlayerInjected) {
                     hlsPlayerInjected = true;
                     updateDebugPanel("HLS_FALLBACK", "HLSP2P播放失败,切换hls.js直连\nm3u8=" + shortenUrl(capturedM3u8Url));
                     injectHlsPlayer(capturedM3u8Url);
@@ -1520,13 +919,6 @@ public final class MainActivity extends Activity {
     protected void onDestroy() {
         handler.removeCallbacksAndMessages(null);
         channelHint.removeCallbacks(hideChannelHint);
-        // 清理 GeckoView
-        if (geckoSession != null) {
-            try {
-                geckoSession.close();
-            } catch (Exception ignored) {
-            }
-        }
         webView.destroy();
         super.onDestroy();
     }
