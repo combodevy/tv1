@@ -951,25 +951,23 @@ public final class MainActivity extends Activity {
      * 给 GeckoView 注入自动播放+全屏脚本(仅 CCTV-3/6/8)。
      *
      * 三件事(每次调用都执行,用 JS 内部标志防重复):
-     *  1. 温和 CSS: 隐藏装饰元素(导航栏/频道列表/广告),播放器容器占满。
-     *     关键: 不碰 video 的 position/transform(之前碰了导致 GeckoView 黑屏)
+     *  1. CSS: 只隐藏装饰元素(导航栏/广告/iframe),不碰播放器容器和 video 的任何尺寸/位置
+     *     (之前强制 #player width/height 100% 导致容器被拉大但 video 没跟着放大 → 视频区域黑屏)
      *  2. 自动播放: video.muted=true + play(),2秒后取消 muted 恢复声音
-     *  3. 点击 CCTV 全屏按钮: #player_pagefullscreen_yes_player / .videoFull
-     *     这是 CCTV 播放器自己的 CSS 网页全屏(非 HTML5 Fullscreen API),不会黑屏
+     *  3. 点击 CCTV 全屏按钮: #player_fullscreen_no_player(img 元素,用户提供的实际 DOM 结构)
+     *     点击后 CCTV 播放器自己切换到网页全屏布局(CSS 放大,非 HTML5 Fullscreen API,不会黑屏)
      */
     private void injectGeckoAutoPlay() {
         if (geckoSession == null) return;
         String js =
                 "(function(){" +
-                // 1. 温和 CSS: 只隐藏装饰 + 放大容器,绝不碰 video 的 position
+                // 1. CSS: 只隐藏装饰,绝不碰播放器容器和 video 的尺寸/位置
                 "  if(!document.getElementById('cctv-gv-style')){" +
                 "    var s=document.createElement('style');" +
                 "    s.id='cctv-gv-style';" +
                 "    s.textContent=" +
                 "      '.video_right,.video_btnBar,.bg_top_h_tile,.bg_bottom_h_tile,header,footer,nav,.vspace,.column_wrapper,.topbar,.sitemap,.shares{display:none!important}'+" +
-                "      'iframe{display:none!important}'+" +
-                "      '#player,#player_container,.video_box,.video_flash,.video_left{width:100%!important;height:100%!important}'+" +
-                "      'html,body{margin:0!important;padding:0!important;background:#000!important;overflow:hidden!important}';" +
+                "      'iframe{display:none!important}';" +
                 "    (document.head||document.documentElement).appendChild(s);" +
                 "  }" +
                 // 2. 自动播放: 找到 video,muted+play+延迟取消 muted
@@ -988,13 +986,14 @@ public final class MainActivity extends Activity {
                 "    }" +
                 "    }catch(e){}" +
                 "  }" +
-                // 3. 点击 CCTV 全屏按钮(网页全屏=CSS放大,非 HTML5 Fullscreen API)
+                // 3. 点击 CCTV 网页全屏按钮(用户提供的实际 DOM: img#player_fullscreen_no_player)
+                //    点击后 CCTV 播放器自己处理全屏布局,不干扰 GeckoView 渲染
                 "  try{" +
-                "  var fs=document.querySelector('#player_pagefullscreen_yes_player')||document.querySelector('.videoFull');" +
+                "  var fs=document.querySelector('#player_fullscreen_no_player');" +
                 "  if(fs&&!fs.__gvClicked){" +
                 "    fs.__gvClicked=true;" +
                 "    fs.click();" +
-                "    console.log('[CCTV-GV] clicked fullscreen btn');" +
+                "    console.log('[CCTV-GV] clicked #player_fullscreen_no_player');" +
                 "  }" +
                 "  }catch(e){}" +
                 "})()";
