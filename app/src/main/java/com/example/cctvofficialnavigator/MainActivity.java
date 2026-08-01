@@ -58,6 +58,13 @@ public final class MainActivity extends Activity {
     private static final String SAVED_CHANNEL_INDEX = "channel_index";
     private static final long CHANNEL_HINT_DURATION_MS = 1800L;
     private static final long WHITE_SCREEN_CHECK_DELAY_MS = 15000L;
+    /**
+     * 桌面 Chrome UA。仅对"移动端页面返回'分享频道已下架'/版权受限空页"的央视频桌面端直播
+     * 页 (yangshipin.cn/tv/home?pid=CCTV-6/3/8) 使用,其余频道一律保持系统默认移动 UA。
+     * 注意:Android WebView 用的 UA 里要包含 "Chrome/" 让央视频的前端 CDN 按桌面 Chromium
+     *   解析而非 Safari/WebKit。
+     */
+    private static final String DESKTOP_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
 
     private WebView webView;
     private TextView channelHint;
@@ -167,7 +174,8 @@ public final class MainActivity extends Activity {
         settings.setJavaScriptEnabled(true);
         settings.setDomStorageEnabled(true);
         settings.setDatabaseEnabled(true);
-        // 全部频道使用系统默认移动 UA(CCTV-3/6/8 已移除)
+        // 默认使用系统移动UA。对央视频桌面端(yangshipin.cn/tv/home)等特定频道,
+        // 会在 loadChannel 里切到 DESKTOP_UA(桌面UA),保证不出现"分享频道已下架"等移动端空页提示。
         settings.setUserAgentString(null);
         settings.setLoadsImagesAutomatically(true);
         settings.setBlockNetworkImage(false);
@@ -432,6 +440,9 @@ public final class MainActivity extends Activity {
                 "    '#J_prismPlayer,#prismPlayer,#live_prismPlayer,.prism-player{width:100vw!important;height:100vh!important;margin:0!important;padding:0!important;position:absolute!important;left:0!important;top:0!important;background:#000!important;border:0!important}'+" +
                 // 广西台播放器外壳(liangtv/频道详情页常见的 wrapper id)
                 "    '#play-box,#videoBox,#playBox,.player-wrap,.live-wrap{width:100vw!important;height:100vh!important;margin:0!important;padding:0!important;position:absolute!important;left:0!important;top:0!important;background:#000!important}'+" +
+                // 央视频桌面端(yangshipin.cn/tv/home)播放器容器(CMGPlayer / 腾讯云txp):桌面UA访问后
+                //   实际是 CMGPlayer 内嵌 txp_player,把这几种常见 id/class 都拉满全屏,确保父级尺寸不为0。
+                "    '#cmgPlayer,.CMGPlayer,#cmg_player,.cmg-player-wrap,.cmgplayer-wrap,.ysp-player,.yspPlayer,.tv-player-wrap,.tv-player-container,.player-main-wrap,.ysp-player-wrap,.ysp-player-box,.txp_container,.txp_video_container{width:100vw!important;height:100vh!important;margin:0!important;padding:0!important;position:absolute!important;left:0!important;top:0!important;background:#000!important;border:0!important}'+" +
                 // iframe: CCTV 页面的 iframe 是广告(yangshipin.cn)而非播放器,直接隐藏。
                 //   AliPlayer H5 模式直接在主文档建 <video>,不依赖 iframe;如果将来碰到用 iframe 的变种,再针对性放行。
                 "    'iframe{display:none!important}'+" +
@@ -441,7 +452,7 @@ public final class MainActivity extends Activity {
                 // #h5player_player 是 CCTV 播放器创建的 video 元素 ID
                 "    '#h5player_player{position:fixed!important;display:block!important;visibility:visible!important;opacity:1!important;width:100vw!important;height:100vh!important;min-width:100vw!important;min-height:100vh!important;left:0!important;top:0!important;z-index:999999!important;object-fit:contain!important;background:#000!important;transform:translateZ(0)!important;backface-visibility:hidden!important}'+" +
                 // 播放器容器: 确保尺寸不为 0,overflow 不裁剪 video
-                "    '#player,#player_container,.video_box,.video_flash,.video_left,#J_prismPlayer,#prismPlayer,.prism-player{overflow:visible!important;width:100vw!important;height:100vh!important}'+" +
+                "    '#player,#player_container,.video_box,.video_flash,.video_left,#J_prismPlayer,#prismPlayer,.prism-player,#cmgPlayer,.CMGPlayer,.ysp-player,.tv-player-wrap,.player-main-wrap,.txp_container{overflow:visible!important;width:100vw!important;height:100vh!important}'+" +
                 // 装饰元素: 隐藏 (桌面版的顶部 CCTV 大导航栏也必须隐藏)
                 // + AliPlayer 控制栏/水印/封面/大播放按钮 (.prism-controlbar .prism-big-play-btn .prism-cover .prism-watermark .prism-live-tip)
                 // + 广西台页面常见装饰 (.header .nav .footer .channel-list .channel-detail .program-list .live-info .share-bar .page-header .page-footer .breadcrumb)
@@ -453,7 +464,20 @@ public final class MainActivity extends Activity {
                 "    '.ysp-header,.ysp-footer,.ysp-login,.ysp-download,.ysp-related,.ysp-program,.ysp-side-nav,.ysp-detail,.ysp-epg,.ysp-recommend,'+" +
                 "    '.app-download-btn,.follow-btn,.attention-btn,.login-bar,.share-box,.program-list,.recommend-list,.comment-box,.bottom-copyright,'+" +
                 "    '.txp_layer_bottom,.txp_top_title,.txp_vip_tip,.txp_mini_tip,.txp_btn,.txp_right_menu,'+" +
-                "    '#YSP_HEADER,#YSP_FOOTER,#ysp_download,#ysp_login,#ysp_attention,#ysp_share,#ysp_program,#ysp_related,#ysp_recommend{display:none!important}';" +
+                // 央视频桌面端(yangshipin.cn/tv/home)特有装饰: 顶部导航 / 左右侧边栏(频道/推荐) / 节目单(EPG) / 分类Tab / 登录下载按钮
+                "    '.ysp-top,.top-wrapper,.header-top,.nav-header,.ysp-tabs,.channel-tabs,.category-tabs,.tv-tabs,'+" +
+                "    '.ysp-sidebar-left,.left-sidebar,.side-bar-left,.ysp-side-nav-left,.side-nav,.tv-side,.channels-side,.channel-wrap,.channel-panel,.channels-panel,.ysp-channels,.channel-bar,.tv-channels,.ysp-channel-nav,.channelListWrapper,'+" +
+                "    '.program-guide-bar,.program-grid,.program-schedule,.ysp-program-guide,.tv-epg,.ysp-schedule,.tv-programs,.epg-tabs,.tv-date-tabs,.program-date-bar,.date-tab,.epg-header,.epg-nav,.epg-wrap,.ysp-program-date,.date-tabs,.tabs-days,'+" +
+                "    '.ysp-sidebar-right,.right-sidebar,.side-bar-right,.ysp-side-nav-right,.side-right,.recommend-panel,.right-panel,.ysp-recommend-wrap,.tv-right-side,'+" +
+                "    '.ysp-app-download,.open-app-btn,.download-app-btn,.app-open-btn,.ysp-live-title,.live-title,.tv-live-info,.ysp-live-meta,.live-info-bar,.meta-bar,'+" +
+                "    '.layout-left,.layout-right,.layout-main-left,.layout-main-right,.ysp-layout-left,.ysp-layout-right,.left-panel,.right-panel,'+" +
+                "    '.ysp-control,.player-controls,.ysp-bottom-bar,.ysp-player-bar,.control-bar-container,'+" +
+                // 顶部LOGO/搜索/个人中心
+                "    '.ysp-logo,.logo-box,.logo-wrap,.search-box,.search-bar,.search-wrap,.user-area,.user-center,.user-profile,.header-logo-wrap,'+" +
+                // "#开头的装饰ID"
+                "    '#YSP_HEADER,#YSP_FOOTER,#ysp_download,#ysp_login,#ysp_attention,#ysp_share,#ysp_program,#ysp_related,#ysp_recommend,'+" +
+                "    '#open-ysp-app,#ysp-open-app,#ysp-side-nav-left,#ysp-side-nav-right,#ysp-channel-list,#ysp-program-guide,'+" +
+                "    '#ysp-download-app,#ysp-app-download,#ysp-live-title,#ysp-top-bar,#ysp-nav,#ysp-logo,#ysp-search,#ysp-user{display:none!important}';" +
                 "  function applyCss(){" +
                 "    if(document.getElementById('cctv-tv-style'))return;" +
                 "    var s=document.createElement('style');" +
@@ -711,6 +735,16 @@ public final class MainActivity extends Activity {
         channelIndex = ((requestedIndex % count) + count) % count;
         Channel channel = ChannelCatalog.CHANNELS.get(channelIndex);
         updateDebugPanel("加载中", channel.name);
+        // 按频道级 UA 策略切换:
+        //   - yangshipin.cn/tv/home?pid=CCTV6/3/8 等桌面端独立直播页 → DESKTOP_UA
+        //       (移动UA 返回"分享频道已下架"+默认CCTV1台标占位,桌面UA才能正确加载CCTV-6)
+        //   - 其他台(CCTV 1/2/4/5/... + 广西台) → 系统默认移动 UA
+        //       (tv.cctv.com/live/cctvX 系列移动端布局 CSS 已适配、广西台 gxtv.cn 移动UA正常)
+        final boolean useDesktop = needsDesktopUA(channel.officialUrl);
+        webView.getSettings().setUserAgentString(useDesktop ? DESKTOP_UA : null);
+        // 记录 UA 切换情况(便于调试)
+        updateDebugPanel(useDesktop ? "UA:桌面" : "UA:移动",
+                useDesktop ? "yangshipin桌面端CCTV6需要桌面UA" : "标准移动UA");
         webView.loadUrl(channel.officialUrl);
         showChannelHint(channel.name);
         // 立即开始白屏倒计时,不依赖 onPageFinished
@@ -1138,6 +1172,23 @@ public final class MainActivity extends Activity {
                             | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
                             | View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
         }
+    }
+
+    /**
+     * 是否需要桌面 UA(仅对特定频道,不影响其他用移动 UA 正常的台)。
+     *   当前触发条件(任一命中即返回 true):
+     *     - 央视频桌面端直播页:yangshipin.cn/tv/home?pid=XXX
+     *       (移动UA访问该页会返回"分享频道已下架"/默认CCTV1空页/台标占位图,
+     *       必须桌面UA 才能正确解析到 pid 对应频道的播放器和 m3u8 流)
+     *   以后要新增CCTV-3 / CCTV-8(也是同样问题)时,直接把它们的 URL 指向
+     *     yangshipin.cn/tv/home?pid=对应PID,这里会自动命中,无需再改逻辑。
+     */
+    private boolean needsDesktopUA(String url) {
+        if (url == null) return false;
+        String lc = url.toLowerCase(Locale.ROOT);
+        // 央视频桌面端电视直播页(带 pid 参数的都是独立频道)
+        if (lc.contains("yangshipin.cn/tv/home") && lc.contains("pid=")) return true;
+        return false;
     }
 
     private boolean isOfficialCctvUrl(String url) {

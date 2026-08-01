@@ -13,10 +13,12 @@ final class ChannelCatalog {
             new Channel("CCTV-4 中文国际（美）",     "https://tv.cctv.com/live/cctvamerica/"),
             new Channel("CCTV-5 体育",              "https://tv.cctv.com/live/cctv5/"),
             new Channel("CCTV-5+ 体育赛事",          "https://tv.cctv.com/live/cctv5plus/"),
-            // CCTV-6/3/8 在 tv.cctv.com 有 P2P+DRM,Android WebView 黑屏,改用央视频移动版独立播放页:
-            //   yangshipin 移动版 vid/pid 是频道ID(长期有效),给出的是"标清备用流",无DRM,纯HLS,
-            //   在 Android WebView 上直接用 video/MSE 即可播放,且能用现有 hls.js 兜底。
-            new Channel("CCTV-6 电影",              "https://m.yangshipin.cn/video?type=1&vid=2000203303&pid=600001802"),
+            // CCTV-6 在 tv.cctv.com 走 HLSP2P+DRM,Android WebView 黑屏有声音。
+            // 改用央视频桌面端独立直播页(带 pid 直接切到 CCTV6):
+            //   yangshipin.cn/tv/home?pid=600108442 = CCTV6 官方桌面端直播入口,桌面UA加载后直接
+            //   走 CMGPlayer 解析 m3u8 (mobilelive-play.ysp.cctv.cn 纯HLS无加密),能被
+            //   shouldInterceptRequest 拦截后 hls.js 兜底。
+            new Channel("CCTV-6 电影",              "https://www.yangshipin.cn/tv/home?pid=600108442"),
             new Channel("CCTV-7 国防军事",           "https://tv.cctv.com/live/cctv7/"),
             new Channel("CCTV-9 纪录",              "https://tv.cctv.com/live/cctvjilu/"),
             new Channel("CCTV-10 科教",             "https://tv.cctv.com/live/cctv10/"),
