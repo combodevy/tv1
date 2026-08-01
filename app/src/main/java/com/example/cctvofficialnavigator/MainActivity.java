@@ -97,6 +97,8 @@ public final class MainActivity extends Activity {
     // HTML5 全屏自定义视图:WebView 进入全屏时(video.webkitRequestFullscreen)会传入一个包含 SurfaceView 的 View
     private View customFullscreenView;
     private WebChromeClient.CustomViewCallback customFullscreenCallback;
+    /** 当前预期加载的官方 URL,用于判断 WebView 是否被服务器重定向到了 m.yangshipin.cn 等旧域名。 */
+    private String expectedOfficialUrl;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -193,19 +195,60 @@ public final class MainActivity extends Activity {
         settings.setAllowFileAccess(true);
         settings.setAllowContentAccess(true);
 
+        // 远程调试:Chrome 访问 chrome://inspect 可直接调试 WebView 的 DOM/console/network
+        //  方便现场抓 CCTV-6 重定向时的 Header/重定向链
+        WebView.setWebContentsDebuggingEnabled(true);
+
         // 用自定义的 WebChromeClient 拦截 console 输出和加载进度(CCTV 内部的 JS 报错能反映到 logcat/面板)
         // 同时处理 HTML5 全屏(onShowCustomView),让 video 用 WebView 自己的全屏机制渲染,避免 CSS 硬拉导致黑屏
         webView.setWebChromeClient(new LoggingWebChromeClient(this));
         webView.setWebViewClient(new WebViewClient() {
+            /** 记录 www.yangshipin.cn → m.yangshipin.cn 自动重试次数,避免无限循环重定向。 */
+            private int redirectRetryCount = 0;
+            private static final int MAX_REDIRECT_RETRY = 3;
+
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
-                return !isOfficialCctvUrl(request.getUrl().toString());
+                String url = request.getUrl().toString();
+                // ============ 防重定向核心 1/2:拦截 m.yangshipin.cn(移动端旧域名) ============
+                // 服务器看到 X-Requested-With: com.example.cctvofficialnavigator 就 302/JS 跳 m.yangshipin.cn
+                // 如果发现被跳去 m.yangshipin.cn,并且我们原本 expectedOfficialUrl 是 www.yangshipin.cn/tv/home?pid=XXX,
+                // 就直接拦截这次跳转,重新 load www 版(带 additionalHttpHeaders 覆盖 X-Requested-With + 加 Referer)
+                if (isMobileYangshipinDomain(url) && expectedOfficialUrl != null
+                        && needsDesktopUA(expectedOfficialUrl)) {
+                    if (redirectRetryCount < MAX_REDIRECT_RETRY) {
+                        redirectRetryCount++;
+                        Log.w("CCTV-TV", "拦截到跳 m.yangshipin.cn,重试第 " + redirectRetryCount + " 次 → 强制加载 " + expectedOfficialUrl);
+                        updateDebugPanel("REDIRECT_BLOCKED_" + redirectRetryCount, "拦截跳m.yangshipin.cn,重加载www版");
+                        loadYangshipinWithHeaders(expectedOfficialUrl);
+                        return true; // 这次跳转吃掉,不执行
+                    } else {
+                        Log.e("CCTV-TV", "防重定向重试已达 " + MAX_REDIRECT_RETRY + " 次上限,放行");
+                    }
+                }
+                // 其他跳转:按原逻辑,非官方域名才拦截(跳外部浏览器)
+                return !isOfficialCctvUrl(url);
             }
 
             @Override
             public void onPageStarted(WebView view, String url, Bitmap favicon) {
                 super.onPageStarted(view, url, favicon);
                 updateDebugPanel("onPageStarted → " + shortenUrl(url), null);
+                // ============ 防重定向核心 2/2:URL 层面兜底 ============
+                // 有些重定向是服务器返回 200 OK 但内部 Location 已变 / JS location.href 改 URL,
+                // shouldOverrideUrlLoading 不一定每次都能拦住。在 onPageStarted 里再检查一次:
+                // 当前加载的 URL 是 m.yangshipin.cn,但预期是 www.yangshipin.cn/tv/home?pid=XXX → 立刻 reload www 版
+                if (isMobileYangshipinDomain(url) && expectedOfficialUrl != null
+                        && needsDesktopUA(expectedOfficialUrl) && redirectRetryCount < MAX_REDIRECT_RETRY) {
+                    redirectRetryCount++;
+                    Log.w("CCTV-TV", "onPageStarted 发现被重定向到 m.yangshipin.cn,重试第 " + redirectRetryCount + " 次");
+                    updateDebugPanel("ONPAGESTART_REDIRECT_" + redirectRetryCount, "重定向检测,强制重加载www版");
+                    // 必须 post 一下,否则 onPageStarted 里直接 loadUrl 会打断当前 onPageStarted
+                    handler.post(() -> loadYangshipinWithHeaders(expectedOfficialUrl));
+                    return; // 不继续注入 CSS/补丁了,反正这个 URL 不对,等下次真正加载 www 版再说
+                }
+                // 切台/重加载后重置重试计数
+                redirectRetryCount = 0;
                 // 1) 最早期:document.write polyfill(必须在任何页面 JS 之前注入,否则晚了)
                 //    Chromium 53+ 起对"parser-blocking + cross-site + document.write 插入的<script>"
                 //    在 2G/慢网下直接不执行(2G Intervention)。CCTV 的播放器启动链里有用
@@ -232,6 +275,15 @@ public final class MainActivity extends Activity {
             public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
                 updateDebugPanel("onPageFinished → " + shortenUrl(url), null);
+                // ============ 兜底:onPageFinished 了还在 m.yangshipin.cn → 再来一次 ============
+                if (isMobileYangshipinDomain(url) && expectedOfficialUrl != null
+                        && needsDesktopUA(expectedOfficialUrl) && redirectRetryCount < MAX_REDIRECT_RETRY) {
+                    redirectRetryCount++;
+                    Log.w("CCTV-TV", "onPageFinished 仍在 m.yangshipin.cn,第 " + redirectRetryCount + " 次重加载");
+                    updateDebugPanel("FINISH_REDIRECT_" + redirectRetryCount, "未跳至www版,继续重加载");
+                    handler.postDelayed(() -> loadYangshipinWithHeaders(expectedOfficialUrl), 300);
+                    return;
+                }
                 // 再次注入确保覆盖(onPageStarted 注入的可能因为页面 JS 重写 DOM 而失效)
                 injectAutoFullscreen(view);
             }
@@ -276,6 +328,96 @@ public final class MainActivity extends Activity {
                 }
             }
         });
+        // X-Requested-With 彻底移除(双保险):
+        //   additionalHttpHeaders 里传的空字符串,有些 Chromium 版本里会被内部覆盖为包名;
+        //   反射直接清掉 WebView Provider 里持有的 mRequestedWithHeader,从根上移除这个 header。
+        //   Android API >= 26 (O) 公开了 API,低版本走反射兜底。
+        removeXRequestedWithHeader(webView);
+    }
+
+    /**
+     * 反射 + 公开 API 双路径移除 WebView 的 X-Requested-With Header。
+     * Android O (API 26)+ 的标准做法是 WebSettings.setRequestedWithHeader("") 或
+     *   通过 WebView.getWebViewClient() 回调 getRequestedWithHeader(),但系统 WebView
+     *   里这个 Header 还会在底层 aw_network 层从 Context 包名再塞一次,所以必须反射
+     *   清掉 AwBrowserContext / AwContents 里的 mRequestedWithHeader 字段。
+     * 本方法只处理 best-effort:任何一步失败都静默,绝不崩溃影响播放。
+     */
+    @SuppressLint({"PrivateApi", "SoonBlockedPrivateApi"})
+    private static void removeXRequestedWithHeader(WebView webView) {
+        if (webView == null) return;
+        // 路径 1:Android 11+ 公开了 WebSettingsCompat.setRequestedWithHeader(WebSettings, "")
+        // 但 AGP 8.6.1 没带 androidx.webkit,我们直接反射 android.webkit.WebSettings 的方法
+        try {
+            Class<?> wc = Class.forName("android.webkit.WebSettings");
+            java.lang.reflect.Method setRwh = wc.getDeclaredMethod("setRequestedWithHeader", String.class);
+            setRwh.setAccessible(true);
+            setRwh.invoke(webView.getSettings(), "");
+            Log.i("CCTV-TV", "setRequestedWithHeader('') via WebSettings → OK");
+        } catch (Throwable t) {
+            Log.d("CCTV-TV", "WebSettings.setRequestedWithHeader 不可用,走反射兜底: " + t);
+        }
+        // 路径 2:反射 AwContents.mContext 上层持有的 mRequestedWithHeader (Chromium 层)
+        // 先拿 WebView 的 mProvider(WebViewChromium)
+        try {
+            Class<?> webViewCls = WebView.class;
+            java.lang.reflect.Field fProvider = webViewCls.getDeclaredField("mProvider");
+            fProvider.setAccessible(true);
+            Object provider = fProvider.get(webView);
+            if (provider == null) return;
+            // 找 WebViewChromium 里的 mAwContents
+            Class<?> providerCls = provider.getClass();
+            Object awContents = null;
+            for (java.lang.reflect.Field f : providerCls.getDeclaredFields()) {
+                if (f.getType().getName().contains("AwContents")) {
+                    f.setAccessible(true);
+                    awContents = f.get(provider);
+                    break;
+                }
+            }
+            if (awContents == null) return;
+            // 从 AwContents 向上找 mBrowserContext / mRequestedWithHeader
+            Class<?> awcCls = awContents.getClass();
+            boolean cleared = false;
+            // 不同 Chromium 版本字段名可能是 mRequestedWithHeader / requested_with_header_ / mRequestedWith
+            for (String fname : new String[]{"mRequestedWithHeader", "requested_with_header_", "mRequestedWith", "requested_with"}) {
+                try {
+                    java.lang.reflect.Field f = awcCls.getDeclaredField(fname);
+                    f.setAccessible(true);
+                    f.set(awContents, "");
+                    cleared = true;
+                    Log.i("CCTV-TV", "反射清 AwContents." + fname + " → OK");
+                } catch (Throwable t2) { /* 这个字段不存在,跳过 */ }
+            }
+            // 再去 AwBrowserContext 找(有些版本存在 context 上)
+            if (!cleared) {
+                for (java.lang.reflect.Field f : awcCls.getDeclaredFields()) {
+                    if (f.getType().getName().contains("AwBrowserContext")) {
+                        f.setAccessible(true);
+                        Object ctx = f.get(awContents);
+                        if (ctx != null) {
+                            for (String fname : new String[]{"mRequestedWithHeader", "requested_with_header_", "mRequestedWith"}) {
+                                try {
+                                    java.lang.reflect.Field f2 = ctx.getClass().getDeclaredField(fname);
+                                    f2.setAccessible(true);
+                                    f2.set(ctx, "");
+                                    cleared = true;
+                                    Log.i("CCTV-TV", "反射清 AwBrowserContext." + fname + " → OK");
+                                    break;
+                                } catch (Throwable t3) { /* skip */ }
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+            if (!cleared) {
+                Log.d("CCTV-TV", "反射兜底找不到 mRequestedWithHeader 字段(本 Chromium 版本可能不通过该字段加 header)");
+            }
+        } catch (Throwable t) {
+            // 任何反射失败都不影响使用,additionalHttpHeaders 那一层已经覆盖了
+            Log.d("CCTV-TV", "反射移除 X-Requested-With 失败(不影响播放): " + t);
+        }
     }
 
     /**
@@ -735,6 +877,8 @@ public final class MainActivity extends Activity {
         channelIndex = ((requestedIndex % count) + count) % count;
         Channel channel = ChannelCatalog.CHANNELS.get(channelIndex);
         updateDebugPanel("加载中", channel.name);
+        // 记录预期 URL,防重定向逻辑会比对"实际加载 URL"和"预期 URL"是否一致
+        expectedOfficialUrl = channel.officialUrl;
         // 按频道级 UA 策略切换:
         //   - yangshipin.cn/tv/home?pid=CCTV6/3/8 等桌面端独立直播页 → DESKTOP_UA
         //       (移动UA 返回"分享频道已下架"+默认CCTV1台标占位,桌面UA才能正确加载CCTV-6)
@@ -745,11 +889,78 @@ public final class MainActivity extends Activity {
         // 记录 UA 切换情况(便于调试)
         updateDebugPanel(useDesktop ? "UA:桌面" : "UA:移动",
                 useDesktop ? "yangshipin桌面端CCTV6需要桌面UA" : "标准移动UA");
-        webView.loadUrl(channel.officialUrl);
+        if (useDesktop) {
+            // 央视频桌面端(yangshipin.cn/tv/home?pid=XXX):带 additionalHttpHeaders 加载
+            //  核心就是 2 个 header:
+            //    1) Referer: https://www.yangshipin.cn/  (告诉服务器你是从官网点过来的)
+            //    2) X-Requested-With: 空字符串 (覆盖 Android WebView 默认加的包名 header,
+            //       服务器看这个 header 就知道是 WebView 不是 Chrome,直接跳移动版)
+            loadYangshipinWithHeaders(channel.officialUrl);
+        } else {
+            webView.loadUrl(channel.officialUrl);
+        }
         showChannelHint(channel.name);
         // 立即开始白屏倒计时,不依赖 onPageFinished
         // (CCTV 页面有持续心跳,onPageFinished 在某些频道永远不触发)
         scheduleWhiteScreenCheck();
+    }
+
+    /**
+     * 加载央视频桌面端 www.yangshipin.cn/tv/home?pid=XXX,带定制 HTTP Headers。
+     * 这是修复 CCTV-6 被重定向到 m.yangshipin.cn 的**核心手法**:
+     *   - 加 Referer: 伪装成用户从 yangshipin.cn 官网自己跳过来的,不是陌生的外部 App 请求
+     *   - 加 X-Requested-With="" (空字符串): Android WebView 会默认给所有请求加上
+     *     `X-Requested-With: <app包名>` 这个 Header,服务器看这个直接判定"非 Chrome PC 浏览器"
+     *     就 302 跳移动版。通过 loadUrl(..., additionalHttpHeaders) 把它覆盖为空,
+     *     服务器收到空值或根本收不到(取决于 Chromium 实现),就和真 Chrome 行为一致了。
+     *   - 加 Accept: text/html,... 和 Sec-Fetch-Site/Dest/User 的组合,伪装得更像桌面 Chrome
+     */
+    private void loadYangshipinWithHeaders(String url) {
+        java.util.Map<String, String> headers = new java.util.HashMap<>();
+        // === 关键 Header 1/2: X-Requested-With 清空,不要暴露包名 ===
+        // Chrome/Edge 桌面浏览器都不加这个 header,只有 Android WebView 加
+        headers.put("X-Requested-With", "");
+        // === 关键 Header 2/2: Referer 填官网首页,表示是站内跳转 ===
+        headers.put("Referer", "https://www.yangshipin.cn/");
+        // 桌面 Chrome 126 的真实请求 Headers(节选,尽量贴近真实浏览器请求)
+        headers.put("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7");
+        headers.put("Accept-Language", "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7");
+        headers.put("Cache-Control", "max-age=0");
+        headers.put("Sec-Fetch-Dest", "document");
+        headers.put("Sec-Fetch-Mode", "navigate");
+        headers.put("Sec-Fetch-Site", "same-origin");
+        headers.put("Sec-Fetch-User", "?1");
+        headers.put("Upgrade-Insecure-Requests", "1");
+        Log.i("CCTV-TV", "loadYangshipinWithHeaders → " + url + " headers=" + headers.keySet());
+        webView.loadUrl(url, headers);
+    }
+
+    /**
+     * 判断 URL 是不是央视频移动端旧域名(就是"分享频道已下架"那套页面所在的域名)。
+     * 命中条件:
+     *   - m.yangshipin.cn / ydh5.yangshipin.cn 等手机子域名
+     *   - 或者 URL 里有 "m.yangshipin" 字样(兜底)
+     * 注意:www.yangshipin.cn(桌面版)不会命中这个方法,yangshipin.cn 裸域也不命中
+     *       (因为裸域一般会 302 到 www,属于正常跳转)
+     */
+    private static boolean isMobileYangshipinDomain(String url) {
+        if (url == null) return false;
+        try {
+            String host = new URI(url).getHost();
+            if (host == null) {
+                // 拿不到 host 时退化:用字符串 contains 兜底
+                return url.contains("m.yangshipin");
+            }
+            String lc = host.toLowerCase(Locale.ROOT);
+            // 明确是手机子域名
+            if (lc.equals("m.yangshipin.cn") || lc.endsWith(".m.yangshipin.cn")) return true;
+            // 央视频移动端旧版 H5 域名 (出现在 2026 年之前的 CCTV6 分享页)
+            if (lc.equals("ydh5.yangshipin.cn") || lc.endsWith(".ydh5.yangshipin.cn")) return true;
+            return false;
+        } catch (Exception e) {
+            // URI 解析失败兜底
+            return url.contains("m.yangshipin");
+        }
     }
 
     private void showChannelHint(String channelName) {
