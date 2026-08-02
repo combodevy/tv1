@@ -1640,11 +1640,29 @@ public final class MainActivity extends Activity {
             return;
         }
         try {
+            // ============================== 关键修复:CCTV3/8绿屏根因 ==============================
+            // 用户截图:底部Toast「已切换到原生播放器」→ExoPlayer确实启动了,但画面纯绿屏。
+            // 之前抓到的CCTV3/8 m3u8 URL后缀是 _web.m3u8 (给HLS.js/WebGL解码的流,YUV颜色空间/Range
+            // 和原生播放器不兼容,MediaCodec解码后RGB转换错→纯绿屏/紫屏)。
+            // 而CCTV6正常播放的流后缀是 _fhd.m3u8 (给原生/桌面Chrome播放的标准HLS流,YUV颜色空间标准)。
+            // 所以这里:把截到的 _web.m3u8 自动替换成 _fhd.m3u8,再喂给ExoPlayer→和CCTV6完全同流!
+            // 如果 _web 替换失败(流本身就是_fhd的,比如CCTV6),就用原始URL。
+            String originalM3u8 = m3u8Url;
+            String fixedM3u8 = m3u8Url.replace("_web.m3u8", "_fhd.m3u8")
+                                     .replace("_web_",      "_fhd_");   // 双保险:也替换中间的_web_片段
+            final boolean didReplace = !fixedM3u8.equals(originalM3u8);
+            if (didReplace) {
+                Log.i("CCTV-TV", "[M3U8_FIX] 检测到_web.m3u8流(易绿屏),替换为_fhd.m3u8流");
+                updateDebugPanel("M3U8_WEB→FHD",
+                        "YES! 原URL:" + shortenUrl(originalM3u8).substring(0, Math.min(50, originalM3u8.length())));
+            }
+            // 最终播放URL:优先用替换后的_fhd后缀流
+            final String playUrl = (fixedM3u8 != null && !fixedM3u8.isEmpty()) ? fixedM3u8 : originalM3u8;
             // 1. 隐藏 WebView(黑屏的来源) + 暂停 WebView 渲染(省电)
             webView.onPause();
             webView.setVisibility(View.GONE);
-            Log.i("CCTV-TV", "[EXOPLAYER_START] CCTV-3/6/8 切 ExoPlayer 原生播放, m3u8=" + m3u8Url);
-            updateDebugPanel("EXOPLAYER_START", "切原生播放:" + shortenUrl(m3u8Url));
+            Log.i("CCTV-TV", "[EXOPLAYER_START] CCTV-3/6/8 切 ExoPlayer 原生播放, m3u8=" + playUrl);
+            updateDebugPanel("EXOPLAYER_START", "切原生播放:" + (didReplace ? "(web→fhd替换后) " : "") + shortenUrl(playUrl));
 
             // ============== 2. 创建 DataSource.Factory,带和 WebView 完全一致的请求头(解决防盗链) ==============
             // 【关键:为什么CCTV-6能播,CCTV-3/8绿屏?】
@@ -1715,8 +1733,9 @@ public final class MainActivity extends Activity {
             // textureView 保存到 exoPlayerView 引用,切台时 releaseExoPlayer 统一 removeView
             exoPlayerView = textureView;
 
-            // 5. 喂给 ExoPlayer 播放(HlsMediaSource + 带 Referer/UA 的 HTTP 头)
-            MediaItem mediaItem = MediaItem.fromUri(m3u8Url);
+            // 5. 喂给 ExoPlayer 播放(HlsMediaSource + 带 Referer/UA/Origin 的 HTTP 头)
+            //    注意:这里必须用 playUrl(已经把 _web.m3u8 替换成 _fhd.m3u8),不能用原始 m3u8Url,否则CCTV3/8绿屏
+            MediaItem mediaItem = MediaItem.fromUri(playUrl);
             com.google.android.exoplayer2.source.MediaSource ms = hlsFactory.createMediaSource(mediaItem);
             exoPlayer.setMediaSource(ms);
             exoPlayer.prepare();
