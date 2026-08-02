@@ -7,15 +7,13 @@ import java.util.List;
 final class ChannelCatalog {
     static final List<Channel> CHANNELS = Arrays.asList(
             new Channel("CCTV-1 综合",              "https://tv.cctv.com/live/cctv1/"),
+            new Channel("CCTV-1 综合（备用）",       "https://www.yangshipin.cn/tv/home?pid=600001859"),
             new Channel("CCTV-2 财经",              "https://tv.cctv.com/live/cctv2/"),
-            // CCTV-3/6/8 三个台在 tv.cctv.com 走 HLSP2P+DRM,Android WebView 黑屏有声音。
-            // 改用央视频桌面端独立直播页(带 pid 直接切到对应台),PID已查自第三方IPTV源(Ku9-IPTV-source官方PID列表):
-            //   yangshipin.cn/tv/home?pid=600001801 = CCTV3 综艺 官方桌面端直播入口(真实PID✅)
-            //   yangshipin.cn/tv/home?pid=600108442 = CCTV6 电影 官方桌面端直播入口(真实PID✅,用户实测OK)
-            //   yangshipin.cn/tv/home?pid=600001803 = CCTV8 电视剧 官方桌面端直播入口(真实PID✅)
-            // 桌面UA加载后直接走 CMGPlayer 解析 m3u8 (mobilelive-play.ysp.cctv.cn 纯HLS无加密),
+            // CCTV-6 在 tv.cctv.com 走 HLSP2P+DRM,Android WebView 黑屏有声音。
+            // 改用央视频桌面端独立直播页:yangshipin.cn/tv/home?pid=600108442
+            // 桌面UA加载后走标准HLS.js,请求_fhd.m3u8(标准HLS流,无加密),
             // 被 shouldInterceptRequest 拦截后切 ExoPlayer 原生播放(彻底根治有声音没画面)。
-            new Channel("CCTV-3 综艺",              "https://www.yangshipin.cn/tv/home?pid=600001801"),
+            // 注意:CCTV-3/8 的 yangshipin 页面用 CMG WASM 播放器(_web.m3u8加密流),ExoPlayer解不了,已移除。
             new Channel("CCTV-4 中文国际（亚）",     "https://tv.cctv.com/live/cctv4/"),
             new Channel("CCTV-4 中文国际（欧）",     "https://tv.cctv.com/live/cctveurope/index.shtml"),
             new Channel("CCTV-4 中文国际（美）",     "https://tv.cctv.com/live/cctvamerica/"),
@@ -23,7 +21,6 @@ final class ChannelCatalog {
             new Channel("CCTV-5+ 体育赛事",          "https://tv.cctv.com/live/cctv5plus/"),
             new Channel("CCTV-6 电影",              "https://www.yangshipin.cn/tv/home?pid=600108442"),
             new Channel("CCTV-7 国防军事",           "https://tv.cctv.com/live/cctv7/"),
-            new Channel("CCTV-8 电视剧",             "https://www.yangshipin.cn/tv/home?pid=600001803"),
             new Channel("CCTV-9 纪录",              "https://tv.cctv.com/live/cctvjilu/"),
             new Channel("CCTV-10 科教",             "https://tv.cctv.com/live/cctv10/"),
             new Channel("CCTV-11 戏曲",             "https://tv.cctv.com/live/cctv11/"),
