@@ -7,7 +7,7 @@
         android:label="央视官方直播导航"
         android:supportsRtl="true"
         android:theme="@style/Theme.CctvOfficialNavigator"
-        android:usesCleartextTraffic="false">
+        android:usesCleartextTraffic="true">
         <activity
             android:name=".MainActivity"
             android:configChanges="keyboard|keyboardHidden|orientation|screenSize"

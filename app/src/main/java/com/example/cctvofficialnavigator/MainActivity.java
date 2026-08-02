@@ -572,6 +572,72 @@ public final class MainActivity extends Activity {
                 "(function(){" +
                 "  if(window.__cctvFastLoadingInjected)return;" +
                 "  window.__cctvFastLoadingInjected=true;" +
+                // #region debug-point A:yangshipin-diagnostics
+                "  (function(){" +
+                "    var urls=['http://192.168.1.4:7777/event','http://10.0.2.2:7777/event'];" +
+                "    function send(o){" +
+                "      try{" +
+                "        var body=JSON.stringify(o);" +
+                "        for(var ui=0;ui<urls.length;ui++){" +
+                "          try{fetch(urls[ui],{method:'POST',body:body,headers:{'Content-Type':'application/json'}}).catch(function(){});}catch(e){" +
+                "            try{var x=new XMLHttpRequest();x.open('POST',urls[ui],true);x.setRequestHeader('Content-Type','application/json');x.send(body);}catch(e2){}" +
+                "          }" +
+                "        }" +
+                "      }catch(e){}" +
+                "    }" +
+                "    function snap(){" +
+                "      try{" +
+                "        var isYsh=(location.host||'').indexOf('yangshipin')>=0;" +
+                "        var videos=[];var vels=document.querySelectorAll('video');" +
+                "        for(var i=0;i<vels.length;i++){" +
+                "          var ve=vels[i];videos.push({" +
+                "            id:ve.id||'',className:ve.className||''," +
+                "            clientWidth:ve.clientWidth,clientHeight:ve.clientHeight," +
+                "            offsetWidth:ve.offsetWidth,offsetHeight:ve.offsetHeight," +
+                "            videoWidth:ve.videoWidth||0,videoHeight:ve.videoHeight||0," +
+                "            paused:ve.paused,muted:ve.muted,readyState:ve.readyState," +
+                "            src:(ve.src||'').slice(0,200),currentSrc:(ve.currentSrc||'').slice(0,200)" +
+                "          });" +
+                "        }" +
+                "        var containers=[];" +
+                "        var csel=['.container[data-v-03d5f916]','.y-full','.video-js','[id^=vodbox]','.video-con','#app','.tv-main-con-l'];" +
+                "        for(var ci=0;ci<csel.length;ci++){" +
+                "          try{var el=document.querySelector(csel[ci]);if(el){" +
+                "            containers.push({sel:csel[ci],tag:el.tagName,className:el.className||'',id:el.id||''," +
+                "              clientWidth:el.clientWidth,clientHeight:el.clientHeight,offsetWidth:el.offsetWidth,offsetHeight:el.offsetHeight," +
+                "              display:window.getComputedStyle(el).display,position:window.getComputedStyle(el).position});" +
+                "          }}catch(e){}" +
+                "        }" +
+                "        var buttons={};" +
+                "        ['.play.play2','.videoFull','.full.full2','.vjs-big-play-button','.play','.videoFull','.full'].forEach(function(sel){" +
+                "          try{var el=document.querySelector(sel);buttons[sel]=el?{exists:true,className:el.className||'',display:window.getComputedStyle(el).display}:{exists:false};}catch(e){buttons[sel]={err:true};}" +
+                "        });" +
+                "        var tips={};" +
+                "        ['.video-status-tip','.volume-muted-tip','.y-full-bg'].forEach(function(sel){" +
+                "          try{var el=document.querySelector(sel);tips[sel]=el?{exists:true,display:window.getComputedStyle(el).display,innerText:el.innerText.slice(0,80)}:{exists:false};}catch(e){tips[sel]={err:true};}" +
+                "        });" +
+                "        var bodyChildren=[];" +
+                "        for(var bi=0;bi<document.body.children.length;bi++){" +
+                "          var bc=document.body.children[bi];bodyChildren.push({tag:bc.tagName,className:bc.className||'',id:bc.id||'',display:window.getComputedStyle(bc).display});" +
+                "        }" +
+                "        send({" +
+                "          sessionId:'cctv6-yangshipin-issue',runId:'pre',hypothesisId:'A'," +
+                "          location:'injectFastLoading:snap',ts:Date.now()," +
+                "          msg:'[DEBUG] yangshipin diagnostics snapshot'," +
+                "          data:{" +
+                "            url:location.href,host:location.host,isYsh:isYsh," +
+                "            scrollY:window.scrollY||window.pageYOffset||0," +
+                "            docScrollTop:document.documentElement.scrollTop,bodyScrollTop:document.body.scrollTop," +
+                "            docHeight:document.documentElement.scrollHeight,bodyHeight:document.body.scrollHeight," +
+                "            viewportW:window.innerWidth,viewportH:window.innerHeight," +
+                "            videoCount:vels.length,videos:videos,containers:containers,buttons:buttons,tips:tips,bodyChildren:bodyChildren" +
+                "          }" +
+                "        });" +
+                "      }catch(e){send({sessionId:'cctv6-yangshipin-issue',runId:'pre',hypothesisId:'A',location:'injectFastLoading:snapError',ts:Date.now(),msg:'[DEBUG] snap error',data:{error:e.message}});}" +
+                "    }" +
+                "    snap();setInterval(snap,2000);" +
+                "  })();" +
+                // #endregion
                 // CSS: 强力覆盖, 同时兼容 移动/桌面 两种布局, iframe 嵌套播放器也要拉满
                 "  var css=" +
                 "    'html,body{width:100%!important;height:100%!important;margin:0!important;padding:0!important;background:#000!important;overflow:hidden!important}'+" +
@@ -652,17 +718,7 @@ public final class MainActivity extends Activity {
                 "    (document.head||document.documentElement).appendChild(s);" +
                 "  }" +
                 // ---------- yangshipin 专属工具函数,其他台绝对不触发 ----------
-                "  function _ysh_is(){try{return (location.host||'').indexOf('yangshipin')>=0;}catch(e){return false;}}" +
-                // 注入 yangshipin 新版 DOM 专属 CSS(只针对 .container/.y-full 等,其他台不执行)
-                "  function _ysh_injectFixCss(){" +
-                "    if(!_ysh_is()||document.getElementById('cctv-ysh-fix-style'))return;" +
-                "    var s=document.createElement('style');s.id='cctv-ysh-fix-style';" +
-                "    s.textContent='.container[data-v-03d5f916],.container,.y-full,.y-full-control{display:block!important;position:fixed!important;left:0!important;top:0!important;width:100vw!important;height:100vh!important;z-index:1!important;background:#000!important}'+" +
-                "    '.y-full-bg,.video-status-tip,.volume-muted-tip,.y-full-control .pip{display:none!important}'+" +
-                "    '.play.play2,.videoFull,.full.full2,.y-full-control-btnl,.y-full-control-btnr{display:block!important;visibility:visible!important;opacity:1!important}'+" +
-                "    '.video-js,.video-js video,video[id^=myvideo]{width:100%!important;height:100%!important}';" +
-                "    (document.head||document.documentElement).appendChild(s);" +
-                "  }" +
+                "  function _ysh_is(){try{return (location.host||'').indexOf('yangshipin')>=0||!!document.querySelector('video[id^=myvideo],.video-js,.video-con,[id*=vodbox]');}catch(e){return false;}}" +
                 // 锁死滚动到 (0,0):只对 yangshipin 执行(其他台不需要,且怕有副作用)
                 "  function _ysh_lockScroll(){" +
                 "    if(!_ysh_is())return;" +
@@ -670,28 +726,18 @@ public final class MainActivity extends Activity {
                 "    try{document.documentElement.scrollTop=0;document.documentElement.scrollLeft=0;}catch(e){}" +
                 "    try{document.body.scrollTop=0;document.body.scrollLeft=0;}catch(e){}" +
                 "  }" +
-                // 模拟用户鼠标点击 yangshipin 新版播放/全屏按钮(绕过自动播放策略):只对 yangshipin 执行
-                "  function _ysh_clickPlay(){" +
-                "    if(!_ysh_is())return;" +
-                "    function click(sel){try{var el=document.querySelector(sel);if(el){el.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window}));return true;}return false;}catch(e){return false;}}" +
-                "    function tryAll(){" +
-                "      var done=false;" +
-                "      if(click('.play.play2'))done=true;" +
-                "      else if(click('.videoFull'))done=true;" +
-                "      else if(click('.full.full2'))done=true;" +
-                "      else{var btns=document.querySelectorAll('.vjs-big-play-button,.cmg-play-btn,.btn-play,.play-btn,[class*=big][class*=play],[class*=vjs][class*=play]');for(var i=0;i<btns.length;i++){try{btns[i].dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window}));}catch(e){}}}" +
-                "      var vs=document.querySelectorAll('video[id^=myvideo],video');for(var j=0;j<vs.length;j++){try{vs[j].muted=true;vs[j].play();}catch(e){}try{vs[j].dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window}));}catch(e){}}" +
-                "      return done;" +
-                "    }" +
-                "    tryAll();" +
-                "    if(window.__yshClickObs)return;window.__yshClickObs=1;" +
-                "    var obs;try{obs=new MutationObserver(function(){tryAll();});obs.observe(document.body,{childList:true,subtree:true});}catch(e){}" +
-                "    setTimeout(function(){try{obs.disconnect();}catch(e){}},15000);" +
+                // 模拟用户鼠标点击大播放按钮 + video 本身(绕过自动播放策略):只对 yangshipin 执行,且只执行 1 次
+                "  function _ysh_fakeClickPlay(){" +
+                "    if(!_ysh_is())return;if(window.__yshClick)return;window.__yshClick=1;" +
+                "    var btns=document.querySelectorAll('.vjs-big-play-button,.cmg-play-btn,.btn-play,.play-btn,[class*=big][class*=play],[class*=vjs][class*=play]');" +
+                "    for(var i=0;i<btns.length;i++){try{btns[i].dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window}));}catch(e){try{btns[i].click();}catch(e2){}}}" +
+                "    var vs=document.querySelectorAll('video[id^=myvideo],video');" +
+                "    for(var j=0;j<vs.length;j++){try{vs[j].muted=true;vs[j].play();}catch(e){}try{vs[j].dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window}));}catch(e){}}" +
                 "  }" +
                 "  function FastLoading(){" +
                 "    applyCss();" +
-                // yangshipin 专属: 强制容器尺寸 + 锁滚动 + 触发播放
-                "    _ysh_injectFixCss();_ysh_lockScroll();_ysh_clickPlay();" +
+                // yangshipin 专属: 锁滚动 + 兜底点击
+                "    _ysh_lockScroll();_ysh_fakeClickPlay();" +
                 "    if(window.__cctvFlStart===undefined)window.__cctvFlStart=Date.now();" +
                 "    if(Date.now()-window.__cctvFlStart<30000)setTimeout(FastLoading,200);" +
                 "  }" +
@@ -714,42 +760,23 @@ public final class MainActivity extends Activity {
         String js =
                 "(function(){" +
                 // ---------- yangshipin 专属工具函数(和 injectFastLoading 里逻辑一样),其他台绝对不触发 ----------
-                "  function _ysh_is(){try{return (location.host||'').indexOf('yangshipin')>=0;}catch(e){return false;}}" +
-                "  function _ysh_injectFixCss(){" +
-                "    if(!_ysh_is()||document.getElementById('cctv-ysh-fix-style'))return;" +
-                "    var s=document.createElement('style');s.id='cctv-ysh-fix-style';" +
-                "    s.textContent='.container[data-v-03d5f916],.container,.y-full,.y-full-control{display:block!important;position:fixed!important;left:0!important;top:0!important;width:100vw!important;height:100vh!important;z-index:1!important;background:#000!important}'+" +
-                "    '.y-full-bg,.video-status-tip,.volume-muted-tip,.y-full-control .pip{display:none!important}'+" +
-                "    '.play.play2,.videoFull,.full.full2,.y-full-control-btnl,.y-full-control-btnr{display:block!important;visibility:visible!important;opacity:1!important}'+" +
-                "    '.video-js,.video-js video,video[id^=myvideo]{width:100%!important;height:100%!important}';" +
-                "    (document.head||document.documentElement).appendChild(s);" +
-                "  }" +
+                "  function _ysh_is(){try{return (location.host||'').indexOf('yangshipin')>=0||!!document.querySelector('video[id^=myvideo],.video-js,.video-con,[id*=vodbox]');}catch(e){return false;}}" +
                 "  function _ysh_lockScroll(){" +
                 "    if(!_ysh_is())return;" +
                 "    try{window.scrollTo(0,0);}catch(e){}" +
                 "    try{document.documentElement.scrollTop=0;document.documentElement.scrollLeft=0;}catch(e){}" +
                 "    try{document.body.scrollTop=0;document.body.scrollLeft=0;}catch(e){}" +
                 "  }" +
-                "  function _ysh_clickPlay(){" +
-                "    if(!_ysh_is())return;" +
-                "    function click(sel){try{var el=document.querySelector(sel);if(el){el.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window}));return true;}return false;}catch(e){return false;}}" +
-                "    function tryAll(){" +
-                "      var done=false;" +
-                "      if(click('.play.play2'))done=true;" +
-                "      else if(click('.videoFull'))done=true;" +
-                "      else if(click('.full.full2'))done=true;" +
-                "      else{var btns=document.querySelectorAll('.vjs-big-play-button,.cmg-play-btn,.btn-play,.play-btn,[class*=big][class*=play],[class*=vjs][class*=play]');for(var i=0;i<btns.length;i++){try{btns[i].dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window}));}catch(e){}}}" +
-                "      var vs=document.querySelectorAll('video[id^=myvideo],video');for(var j=0;j<vs.length;j++){try{vs[j].muted=true;vs[j].play();}catch(e){}try{vs[j].dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window}));}catch(e){}}" +
-                "      return done;" +
-                "    }" +
-                "    tryAll();" +
-                "    if(window.__yshClickObs)return;window.__yshClickObs=1;" +
-                "    var obs;try{obs=new MutationObserver(function(){tryAll();});obs.observe(document.body,{childlist:true,subtree:true});}catch(e){}" +
-                "    setTimeout(function(){try{obs.disconnect();}catch(e){}},15000);" +
+                "  function _ysh_fakeClickPlay(){" +
+                "    if(!_ysh_is())return;if(window.__yshClick)return;window.__yshClick=1;" +
+                "    var btns=document.querySelectorAll('.vjs-big-play-button,.cmg-play-btn,.btn-play,.play-btn,[class*=big][class*=play],[class*=vjs][class*=play]');" +
+                "    for(var i=0;i<btns.length;i++){try{btns[i].dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window}));}catch(e){try{btns[i].click();}catch(e2){}}}" +
+                "    var vs=document.querySelectorAll('video[id^=myvideo],video');" +
+                "    for(var j=0;j<vs.length;j++){try{vs[j].muted=true;vs[j].play();}catch(e){}try{vs[j].dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window}));}catch(e){}}" +
                 "  }" +
                 "  function ForceFullscreen(){" +
-                // yangshipin 专属前置: 强制容器尺寸 + 锁滚动 + 触发播放(其他台完全不执行,立刻 return)
-                "    _ysh_injectFixCss();_ysh_lockScroll();_ysh_clickPlay();" +
+                // yangshipin 专属前置: 锁滚动 + 兜底点击(其他台完全不执行,立刻 return)
+                "    _ysh_lockScroll();_ysh_fakeClickPlay();" +
                 // 1) 定位 video 元素
                 //    优先级:
                 //      ① video[id^=myvideo]  → yangshipin tv/home video.js 播放器 (ID动态前缀,2026-08-01实机确认)
@@ -826,7 +853,6 @@ public final class MainActivity extends Activity {
                 "    }" +
                 // yangshipin 桌面端 tv/home 真实容器链(2026-08-01实机确认)
                 // .tv-main-con-l(左侧播放器区) → .tv-main-con-l-vid → #vodbox<PID> → .video-con → VIDEO
-                "    if(_ysh_is()){" +
                 "    var yshContainers=document.querySelectorAll('.tv, .tv-main, .tv-main-con, .tv-main-con-l, .tv-main-con-l-vid, [id^=vodbox], .video-con, .video-js, .vjs-tech, .vjs-fluid');" +
                 "    for(var yi=0;yi<yshContainers.length;yi++){" +
                 "      var yc=yshContainers[yi];" +
@@ -840,7 +866,6 @@ public final class MainActivity extends Activity {
                 "      yc.style.margin='0';" +
                 "      yc.style.padding='0';" +
                 "      yc.style.overflow='visible';" +
-                "    }" +
                 "    }" +
                 // 隐藏 video.js 装饰:大播放按钮(灰色封面+黑色三角就是这个)/poster/控制栏/加载转圈/错误框
                 "    var vjsDecor=document.querySelectorAll('.vjs-big-play-button, .vjs-poster, .vjs-control-bar, .vjs-loading-spinner, .vjs-error-display, .vjs-modal-dialog, .vjs-text-track-display, .vjs-title-bar');" +
