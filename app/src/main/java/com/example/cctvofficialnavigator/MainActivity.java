@@ -1335,7 +1335,6 @@ public final class MainActivity extends Activity {
         int count = ChannelCatalog.CHANNELS.size();
         channelIndex = ((requestedIndex % count) + count) % count;
         Channel channel = ChannelCatalog.CHANNELS.get(channelIndex);
-        Toast.makeText(this, channel.name, Toast.LENGTH_SHORT).show();
         // 记录预期 URL,防重定向逻辑会比对"实际加载 URL"和"预期 URL"是否一致
         expectedOfficialUrl = channel.officialUrl;
         // 按频道级 UA 策略切换:
