@@ -1438,7 +1438,7 @@ public final class MainActivity extends Activity {
 
     private void showChannelHint(String channelName) {
         channelHint.removeCallbacks(hideChannelHint);
-        channelHint.setText(channelName + "  ·  上下键切台  ·  OK键频道列表  ·  数字键直跳");
+        channelHint.setText(channelName);
         channelHint.setVisibility(View.VISIBLE);
         channelHint.postDelayed(hideChannelHint, CHANNEL_HINT_DURATION_MS);
     }
