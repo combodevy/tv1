@@ -4,6 +4,7 @@
 
     <application
         android:allowBackup="false"
+        android:hardwareAccelerated="true"
         android:label="央视官方直播导航"
         android:supportsRtl="true"
         android:theme="@style/Theme.CctvOfficialNavigator"

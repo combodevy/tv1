@@ -736,17 +736,21 @@ public final class MainActivity extends Activity {
                 "    var vs=document.querySelectorAll('video[id^=myvideo],video');" +
                 "    for(var j=0;j<vs.length;j++){try{vs[j].muted=true;vs[j].play();}catch(e){}try{vs[j].dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window}));}catch(e){}}" +
                 "  }" +
-                // yangshipin 专属:1)先隐藏不含video的垃圾层(#app版权页/.container新版空壳),避免盖住视频
-                //                2)真实VIDEO/vodbox优先detach(绝不先detach新版空壳)
+                // yangshipin 专属:1)只隐藏不含video的垃圾UI层(不再隐藏全局#app根,避免影响Vue/MediaSource挂载)
+                //                2)Android WebView经典坑:绝对不要对<video>自身position:fixed或detach video元素本身!
+                //                  只detach video的父级DIV(.video-js/.video-con/[id^=vodbox]),父容器用position:fixed 100vw/h
+                //                  video元素自身用width:100% height:100% relative填充父容器 → 让Chromium正确计算video Surface overlay尺寸/位置(修复黑屏有声音)
                 //                3)z-index=2147483647(32-bit int最大值,绝对最顶层)
+                //                4)detach父容器后对readyState>=2的video执行一次pause()+play()强制重建Surface overlay
                 // 函数第一行if(!_ysh_is())return → 其他台零执行零影响
                 "  function _ysh_forceVisibleDetach(){" +
                 "    if(!_ysh_is())return;" +
-                // Step 1: 先把不含真实video的垃圾层(#app首页DOM+新版.container/.y-full等空壳) display:none → 避免层叠顺序盖在视频上
-                "    var hideSels=['#app','.container[data-v-03d5f916]','.container','.y-full','.y-full-bg','.y-full-control','.y-full-control-btn','.volume-muted-tip-container','.video-status-tip'];" +
+                // Step 1: 仅隐藏新版空壳播放UI(不含真实video的节点).不再隐藏整个#app根节点(避免影响全局挂载,引发video内部计算错)
+                "    var hideSels=['.container[data-v-03d5f916]','.container','.y-full','.y-full-bg','.y-full-control','.y-full-control-btn','.volume-muted-tip-container','.video-status-tip','.y-player-gift-list','.y-player-danmu','.y-player-side-panel','.y-player-bottom-bar'];" +
                 "    for(var hi=0;hi<hideSels.length;hi++){try{var hn=document.querySelector(hideSels[hi]);if(hn){hn.style.setProperty('display','none','important');hn.style.setProperty('visibility','hidden','important');hn.style.setProperty('opacity','0','important');hn.style.setProperty('z-index','-1','important');}}catch(err){}}" +
-                // Step 2: 真实 VIDEO 优先 → 真实video / .video-js(video本身) → .video-con → [id^=vodbox] → tv-main-con-*旧版链. 绝不先detach新版空壳
-                "    var sel=['video[id^=myvideo]','.video-js','.video-con','[id^=vodbox]','.tv-main-con-l-vid','.tv-main-con-l','.tv-main-con','.tv-main','.tv','.tv-home'];" +
+                // Step 2: detach VIDEO父级容器DIV(绝对不要detach<video>元素本身)
+                // sel顺序:.video-js(video.js包装层,离video最近)→.video-con→[id^=vodbox]→旧版tv-main-con-*链
+                "    var sel=['.video-js','.video-con','[id^=vodbox]','.tv-main-con-l-vid','.tv-main-con-l','.tv-main-con','.tv-main','.tv','.tv-home'];" +
                 "    var el=null;for(var si=0;si<sel.length;si++){try{var e=document.querySelector(sel[si]);if(e){el=e;break;}}catch(err){}}" +
                 "    if(el){" +
                 "      if(el.parentNode!==document.body){try{el.parentNode.removeChild(el);document.body.insertBefore(el,document.body.firstChild);}catch(err){}}" +
@@ -761,19 +765,26 @@ public final class MainActivity extends Activity {
                 "        el.style.setProperty('transform','none','important');el.style.setProperty('margin','0','important');el.style.setProperty('padding','0','important');" +
                 "      }catch(err){}" +
                 "    }" +
-                // Step 3: 再强制<video>元素本身最高z-index fixed全屏(双保险,绕过任何CSS层级冲突
+                // Step 3: <video>元素自身Android WebView关键修复:
+                //  - 绝对不用position:fixed(和video Surface overlay计算严重冲突→黑屏有声音)
+                //  - 用width:100% height:100% position:relative → 填满已fixed的父容器
+                //  - readyState>=2的video执行一次pause()+play()强制重建Surface overlay绑定
                 "    var vs2=document.querySelectorAll('video[id^=myvideo],video');" +
                 "    for(var vi=0;vi<vs2.length;vi++){" +
                 "      try{" +
                 "        var vv=vs2[vi];" +
-                "        vv.style.setProperty('position','fixed','important');vv.style.setProperty('left','0','important');vv.style.setProperty('top','0','important');" +
-                "        vv.style.setProperty('width','100vw','important');vv.style.setProperty('height','100vh','important');" +
-                "        vv.style.setProperty('min-width','100vw','important');vv.style.setProperty('min-height','100vh','important');" +
+                "        vv.style.setProperty('position','relative','important');" + // 不用fixed!用relative在父容器内填充
+                "        vv.style.setProperty('width','100%','important');vv.style.setProperty('height','100%','important');" +
+                "        vv.style.setProperty('min-width','100%','important');vv.style.setProperty('min-height','100%','important');" +
                 "        vv.style.setProperty('max-width','none','important');vv.style.setProperty('max-height','none','important');" +
-                "        vv.style.setProperty('z-index','2147483647','important');vv.style.setProperty('object-fit','contain','important');" +
+                "        vv.style.setProperty('left','0','important');vv.style.setProperty('top','0','important');" +
+                "        vv.style.setProperty('object-fit','contain','important');" +
                 "        vv.style.setProperty('background','#000','important');vv.style.setProperty('display','block','important');" +
                 "        vv.style.setProperty('visibility','visible','important');vv.style.setProperty('opacity','1','important');" +
                 "        vv.style.setProperty('transform','none','important');vv.style.setProperty('overflow','visible','important');" +
+                "        vv.style.setProperty('margin','0','important');vv.style.setProperty('padding','0','important');" +
+                // 强制重建Surface overlay(修复Chromium detach DOM后video画面丢失的经典bug)
+                "        if(vv.readyState>=2 && !vv.__cctvRebuildSurface){vv.__cctvRebuildSurface=1;try{vv.pause();vv.play();}catch(err2){}}" +
                 "      }catch(err){}" +
                 "    }" +
                 "  }" +
@@ -817,17 +828,21 @@ public final class MainActivity extends Activity {
                 "    var vs=document.querySelectorAll('video[id^=myvideo],video');" +
                 "    for(var j=0;j<vs.length;j++){try{vs[j].muted=true;vs[j].play();}catch(e){}try{vs[j].dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window}));}catch(e){}}" +
                 "  }" +
-                // yangshipin 专属:1)先隐藏不含video的垃圾层(#app版权页/.container新版空壳),避免盖住视频
-                //                2)真实VIDEO/vodbox优先detach(绝不先detach新版空壳)
+                // yangshipin 专属:1)只隐藏不含video的垃圾UI层(不再隐藏全局#app根,避免影响Vue/MediaSource挂载)
+                //                2)Android WebView经典坑:绝对不要对<video>自身position:fixed或detach video元素本身!
+                //                  只detach video的父级DIV(.video-js/.video-con/[id^=vodbox]),父容器用position:fixed 100vw/h
+                //                  video元素自身用width:100% height:100% relative填充父容器 → 让Chromium正确计算video Surface overlay尺寸/位置(修复黑屏有声音)
                 //                3)z-index=2147483647(32-bit int最大值,绝对最顶层)
+                //                4)detach父容器后对readyState>=2的video执行一次pause()+play()强制重建Surface overlay
                 // 函数第一行if(!_ysh_is())return → 其他台零执行零影响
                 "  function _ysh_forceVisibleDetach(){" +
                 "    if(!_ysh_is())return;" +
-                // Step 1: 先把不含真实video的垃圾层(#app首页DOM+新版.container/.y-full等空壳) display:none → 避免层叠顺序盖在视频上
-                "    var hideSels=['#app','.container[data-v-03d5f916]','.container','.y-full','.y-full-bg','.y-full-control','.y-full-control-btn','.volume-muted-tip-container','.video-status-tip'];" +
+                // Step 1: 仅隐藏新版空壳播放UI(不含真实video的节点).不再隐藏整个#app根节点(避免影响全局挂载,引发video内部计算错)
+                "    var hideSels=['.container[data-v-03d5f916]','.container','.y-full','.y-full-bg','.y-full-control','.y-full-control-btn','.volume-muted-tip-container','.video-status-tip','.y-player-gift-list','.y-player-danmu','.y-player-side-panel','.y-player-bottom-bar'];" +
                 "    for(var hi=0;hi<hideSels.length;hi++){try{var hn=document.querySelector(hideSels[hi]);if(hn){hn.style.setProperty('display','none','important');hn.style.setProperty('visibility','hidden','important');hn.style.setProperty('opacity','0','important');hn.style.setProperty('z-index','-1','important');}}catch(err){}}" +
-                // Step 2: 真实 VIDEO 优先 → 真实video / .video-js(video本身) → .video-con → [id^=vodbox] → tv-main-con-*旧版链. 绝不先detach新版空壳
-                "    var sel=['video[id^=myvideo]','.video-js','.video-con','[id^=vodbox]','.tv-main-con-l-vid','.tv-main-con-l','.tv-main-con','.tv-main','.tv','.tv-home'];" +
+                // Step 2: detach VIDEO父级容器DIV(绝对不要detach<video>元素本身)
+                // sel顺序:.video-js(video.js包装层,离video最近)→.video-con→[id^=vodbox]→旧版tv-main-con-*链
+                "    var sel=['.video-js','.video-con','[id^=vodbox]','.tv-main-con-l-vid','.tv-main-con-l','.tv-main-con','.tv-main','.tv','.tv-home'];" +
                 "    var el=null;for(var si=0;si<sel.length;si++){try{var e=document.querySelector(sel[si]);if(e){el=e;break;}}catch(err){}}" +
                 "    if(el){" +
                 "      if(el.parentNode!==document.body){try{el.parentNode.removeChild(el);document.body.insertBefore(el,document.body.firstChild);}catch(err){}}" +
@@ -842,19 +857,26 @@ public final class MainActivity extends Activity {
                 "        el.style.setProperty('transform','none','important');el.style.setProperty('margin','0','important');el.style.setProperty('padding','0','important');" +
                 "      }catch(err){}" +
                 "    }" +
-                // Step 3: 再强制<video>元素本身最高z-index fixed全屏(双保险,绕过任何CSS层级冲突)
+                // Step 3: <video>元素自身Android WebView关键修复:
+                //  - 绝对不用position:fixed(和video Surface overlay计算严重冲突→黑屏有声音)
+                //  - 用width:100% height:100% position:relative → 填满已fixed的父容器
+                //  - readyState>=2的video执行一次pause()+play()强制重建Surface overlay绑定
                 "    var vs2=document.querySelectorAll('video[id^=myvideo],video');" +
                 "    for(var vi=0;vi<vs2.length;vi++){" +
                 "      try{" +
                 "        var vv=vs2[vi];" +
-                "        vv.style.setProperty('position','fixed','important');vv.style.setProperty('left','0','important');vv.style.setProperty('top','0','important');" +
-                "        vv.style.setProperty('width','100vw','important');vv.style.setProperty('height','100vh','important');" +
-                "        vv.style.setProperty('min-width','100vw','important');vv.style.setProperty('min-height','100vh','important');" +
+                "        vv.style.setProperty('position','relative','important');" + // 不用fixed!用relative在父容器内填充
+                "        vv.style.setProperty('width','100%','important');vv.style.setProperty('height','100%','important');" +
+                "        vv.style.setProperty('min-width','100%','important');vv.style.setProperty('min-height','100%','important');" +
                 "        vv.style.setProperty('max-width','none','important');vv.style.setProperty('max-height','none','important');" +
-                "        vv.style.setProperty('z-index','2147483647','important');vv.style.setProperty('object-fit','contain','important');" +
+                "        vv.style.setProperty('left','0','important');vv.style.setProperty('top','0','important');" +
+                "        vv.style.setProperty('object-fit','contain','important');" +
                 "        vv.style.setProperty('background','#000','important');vv.style.setProperty('display','block','important');" +
                 "        vv.style.setProperty('visibility','visible','important');vv.style.setProperty('opacity','1','important');" +
                 "        vv.style.setProperty('transform','none','important');vv.style.setProperty('overflow','visible','important');" +
+                "        vv.style.setProperty('margin','0','important');vv.style.setProperty('padding','0','important');" +
+                // 强制重建Surface overlay(修复Chromium detach DOM后video画面丢失的经典bug)
+                "        if(vv.readyState>=2 && !vv.__cctvRebuildSurface){vv.__cctvRebuildSurface=1;try{vv.pause();vv.play();}catch(err2){}}" +
                 "      }catch(err){}" +
                 "    }" +
                 "  }" +
