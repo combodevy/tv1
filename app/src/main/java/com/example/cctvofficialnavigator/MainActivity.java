@@ -190,12 +190,14 @@ public final class MainActivity extends Activity {
             settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
         }
 
-        // [CCTV-6 黑屏终极修复 1/2] 禁用硬件加速→强制走软件渲染(Canvas/Skia路径),彻底绕过 SurfaceView overlay 合成
-        // Android WebView 视频像素本来走独立 SurfaceView overlay(叠加在 WebView 上面),当 position:fixed/detach DOM 时
-        // overlay 位置计算错误→画面黑屏但有声音(Chromium 老bug).用软件渲染直接把视频像素绘制到 WebView 位图上,
-        // 虽然性能略差但彻底根治 overlay 合成bug,TV/大屏场景下解码后像素量不大软件渲染完全扛得住.
-        webView.setLayerType(View.LAYER_TYPE_SOFTWARE, null);
-        // [CCTV-6 黑屏终极修复 2/2] WebView 背景透明+初始缩放 100%:避免背景色影响画面显示,避免缩放比例错乱导致盒模型计算错误
+        // WebView 默认用硬件加速(LAYER_TYPE_HARDWARE):其他台(CCTV1/2/5+/广西台 etc.)默认走Surface overlay
+        // CCTV-6/3/8(yangshipin.cn桌面端)因Surface overlay位置计算bug→有声音没画面
+        // 修复策略:不在configure阶段固定死layerType,改为在loadChannel()里**按频道动态切**
+        //   → yangshipin桌面台:切LAYER_TYPE_SOFTWARE软件渲染(根治overlay合成bug)
+        //   → 其他台:保持LAYER_TYPE_HARDWARE硬件加速(正常性能,画面正常)
+        // 详见loadChannel里layerType动态切换逻辑(L1198附近)
+        webView.setLayerType(View.LAYER_TYPE_HARDWARE, null);
+        // WebView 背景透明+初始缩放 100%:避免背景色影响画面显示,避免缩放比例错乱导致盒模型计算错误
         try { webView.setBackgroundColor(android.graphics.Color.TRANSPARENT); } catch (Throwable t) {}
         try { settings.setSupportZoom(false); settings.setBuiltInZoomControls(false); webView.setInitialScale(100); } catch (Throwable t) {}
         // 允许在 file: 协议下访问内容(某些缓存/本地资源场景需要)
@@ -1187,10 +1189,27 @@ public final class MainActivity extends Activity {
         //   - 其他台(CCTV 1/2/4/5/... + 广西台) → 系统默认移动 UA
         //       (tv.cctv.com/live/cctvX 系列移动端布局 CSS 已适配、广西台 gxtv.cn 移动UA正常)
         final boolean useDesktop = needsDesktopUA(channel.officialUrl);
+        // ===================== 关键修复:按频道动态切换 WebView LayerType =====================
+        // 上一版全局设LAYER_TYPE_SOFTWARE导致所有台(CCTV1/5+/广西台)都有声音没画面(软件渲染模式下
+        // 很多WebView版本的硬件解码器输出Surface无法绑定到Canvas位图→像素画不出来,但解码器在播→有声音没画面)
+        // 修复策略:
+        //  - 【CCTV-6/3/8(yangshipin桌面端,useDesktop=true)】:切LAYER_TYPE_SOFTWARE
+        //    根治Chromium SurfaceView overlay位置计算错误bug→overlay合成不走这条路,直接位图渲染画面能出来
+        //  - 【其他所有台(默认移动UA,useDesktop=false)】:保持LAYER_TYPE_HARDWARE硬件加速
+        //    正常性能,正常Surface overlay合成,画面正常
+        // 切layerType后必须强制requestLayout()+invalidate()触发WebView重建渲染路径/合成层,否则部分机型不生效
+        if (useDesktop) {
+            try { webView.setLayerType(View.LAYER_TYPE_SOFTWARE, null); } catch (Throwable t) {}
+            try { android.util.Log.i("CCTV-TV", "[LAYER_SWITCH] " + channel.name + "(yangshipin桌面端) → LAYER_TYPE_SOFTWARE 软件渲染(根治overlay合成bug)"); } catch (Throwable t) {}
+        } else {
+            try { webView.setLayerType(View.LAYER_TYPE_HARDWARE, null); } catch (Throwable t) {}
+            try { android.util.Log.i("CCTV-TV", "[LAYER_SWITCH] " + channel.name + "(非yangshipin) → LAYER_TYPE_HARDWARE 硬件加速(正常性能)"); } catch (Throwable t) {}
+        }
+        try { webView.requestLayout(); webView.invalidate(); } catch (Throwable t) {}
+        // 记录 UA + LayerType 切换情况(便于调试)
         webView.getSettings().setUserAgentString(useDesktop ? DESKTOP_UA : null);
-        // 记录 UA 切换情况(便于调试)
-        updateDebugPanel(useDesktop ? "UA:桌面" : "UA:移动",
-                useDesktop ? "yangshipin桌面端CCTV6需要桌面UA" : "标准移动UA");
+        updateDebugPanel(useDesktop ? "UA:桌面 LAYER:软" : "UA:移动 LAYER:硬",
+                useDesktop ? "yangshipin桌面端CCTV6 软件渲染" : "标准移动UA 硬件加速");
         if (useDesktop) {
             // 央视频桌面端(yangshipin.cn/tv/home?pid=XXX):带 additionalHttpHeaders 加载
             //  核心就是 2 个 header:
