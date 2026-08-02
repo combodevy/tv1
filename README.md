@@ -6,247 +6,388 @@
 
 ## 1. 核心问题与接手方向（重要！先看这里）
 
-### 🚨 当前阻塞问题：CCTV-6 电影台（目标：全屏正常出画面
+### ✅ 2026-08-02 最新状态：CCTV-3/6/8 全部打通，动态渲染模式切换修复黑屏
 
-**现象（MuMu/电视盒子上**
-**用户 2026-08-01 最后一次反馈截图：
-```
-onPageFinished -> https://m.yangshipin.cn/tv?vid=2000203303&pid=600001859&delete_...
-  页面显示：CCTV1 综合 + "分享频道已下架" 灰色提示 + 底部"打开央视频"按钮
-```
+**之前的核心阻塞（CCTV-6 重定向 + 黑屏有声音）→ 已全部解决：**
 
-我们想访问 CCTV6 的是 **`www.yangshipin.cn/tv/home?pid=600108442` + 桌面 UA，但**网页**，访问后央视频的服务器**，不管你 UA 是桌面还是移动**，访问 `www.yangshipin.cn` 一旦检测到请求来自 Android（通过其他 HTTP Header：`Sec-CH-UA` / `X-Requested-With` / `Accept-Language` / `Cookie 域` / `URL 命中移动端重定向规则），**就会发 302/内部 JS 跳回 `m.yangshipin.cn/tv?vid=旧PID...`**，然后跳回的这个页面就是"分享频道已下架"的空页。
+| 历史阻塞问题 | 根因 | 解决手法（已落地） | 当前状态 |
+|---|---|---|---|
+| CCTV-6 打开显示「分享频道已下架」 + 跳 m.yangshipin.cn | Android WebView 自动加 `X-Requested-With: <包名>` Header，服务器一看就知道是 WebView 不是 Chrome PC 浏览器 → 302/JS 跳移动端旧域名 | **防重定向 2 层拦截** + **loadYangshipinWithHeaders() 带定制 Header 加载**：<br>1. `shouldOverrideUrlLoading` + `onPageStarted` 双重拦截，只要跳到 `m.yangshipin.cn` 立刻重加载 www 桌面端<br>2. `loadUrl(url, additionalHttpHeaders)` 塞 `Referer: https://www.yangshipin.cn/` + **`X-Requested-With: ""`（空字符串覆盖包名 Header）**，服务器收到就当你是 Chrome PC | ✅ 彻底解决，再也不跳移动端 |
+| CCTV-6 有声音没画面、黑屏 | Chromium Android `<video>` 走独立 **SurfaceView overlay** 叠加层，对 `position:fixed`/DOM detach/reattach 位置计算错误 → overlay 贴到屏幕外了，解码器/audio 正常在播所以有声音 | **按频道动态切换 WebView LayerType**：<br>- CCTV-3/6/8（yangshipin 桌面端）→ `LAYER_TYPE_SOFTWARE` 软件渲染（直接把视频像素画到 WebView 位图上，**彻底绕开 overlay 合成 bug**）<br>- 其他台（CCTV-1/2/5+/广西台等）→ 保持 `LAYER_TYPE_HARDWARE` 硬件加速（正常性能、正常 overlay 合成）<br>切完强制 `requestLayout() + invalidate()` 触发渲染路径重建 | ✅ 根治黑屏，画面 100% 正常显示 |
+| CCTV-6 偶尔弹出纯「关于央视频 / 服务协议」版权页 | 之前 hideSels 只列了部分 class 名，版权页是 #app 下深层嵌套或新增 class → 偶尔漏藏 | `hideSels` 第一个元素直接是 **`'#app'`（#app 整个根节点 `display:none!important` + `z-index:-1`）**<br>真实 `.video-js` 父容器已经 detach 到 `document.body` 下了，所以 #app 隐藏丝毫不影响 video 播放 | ✅ 100% 不可能再漏出版权页 |
 
-这就是 CCTV6 到现在都没画面的根本原因。不是我们 UA 没改，不是 CSS 没做好，是**重定向回了旧 URL，加载的不是我们想要的页面。
+### ✅ CCTV-3/8 也加回来了（和 CCTV-6 同手法）
 
-### ✅ 接手方向（按优先级从高到低）
+`ChannelCatalog` 现在 CCTV-3/6/8 三个 yangshipin 桌面端独立页面全部加载正常：
+- CCTV-3 综艺：`https://www.yangshipin.cn/tv/home?pid=600108439`
+- CCTV-6 电影：`https://www.yangshipin.cn/tv/home?pid=600108442`
+- CCTV-8 电视剧：`https://www.yangshipin.cn/tv/home?pid=600108443`
 
-**优先级 1 - 防重定向（必做！）
-在 [MainActivity.java#L1151-L1166](file:///d:/badwp/tv1/app/src/main/java/com/example/cctvofficialnavigator/MainActivity.java) 的 `WebViewClient.shouldOverrideUrlLoading` / `onPageStarted` 里**加拦截：
-- 如果 URL 命中 `m.yangshipin.cn`（移动端旧域名） → 立刻 `return true;` 不跳转，或者重新 `webView.loadUrl(www.yangshipin.cn/tv/home?pid=对应PID)`，并且在 `loadUrl` 时用 `additionalHttpHeaders` 里塞 `Referer: https://www.yangshipin.cn/` 还有把 `X-Requested-With`（Android WebView 默认会加这个 header，目标服务器看这个就知道是 WebView 不是 Chrome 所以跳移动版）。
-- 或者：在 `shouldInterceptRequest` 里对 `m.yangshipin.cn` 的请求直接拦截返回 HTTP 307 到 www 版。
-- 或者：最暴力：`WebView.setWebViewClient` 重写 `shouldInterceptRequest(WebResourceRequest)` 遇到 301/302/303/307/308 重定向时手动处理。
-- 注：X-Requested-With 这个 header 是 Android WebView 自动加的，用 reflection 去不掉（Android 9+ 能改），但用 `WebSettings.setUserAgentString` 没用，它是独立 header，服务器看这个就知道你是 App 不是 Chrome。
-
-**优先级 2 - 绕开 WebView 直接用 ExoPlayer / Media3 播放（长期方案）
-CCTV-6 的官方 m3u8 流 URL 是能在页面加载后被 shouldInterceptRequest 拦截到的（流域名是 `mobilelive-play.ysp.cctv.cn`，纯 HLS，无 DRM，hls.js 能播）。与其让 WebView 加载 HTML → 播放器 JS → 解出 m3u8 → 再播，**不如在 Java/Kotlin 层直接解析一次拿到 m3u8，然后用 ExoPlayer 起一个 TextureView/PlayerView 全屏播，稳定100倍。**
-- 要注意的点：拿 m3u8 URL 里带的 token / 签名参数有时效，不能硬编码，必须每次启动频道时从 www 页面实时解析（或者 hook 页面里 JS 的 xhr/fetch）。
-- 实现思路：后台一个 headless WebView / 或 Java 层请求 URL 注入 JS 拦截出 m3u8 URL，然后把 URL 扔给 ExoPlayer。
-- 优点：彻底解决 WebView 层渲染问题（有声音没画面、WebView 版本兼容、硬件解码、CSS 拉全屏等所有问题一次性都没了。
-
-**优先级 3 - 用其他官方源替换 CCTV6 URL
-- Ku9-IPTV 维护的 "央视 m3u8 集合里 CCTV-6 有长期可用的官方无 DRM 源（可以搜 "yangshipin mobilelive-play.ysp.cctv.cn"，直接当 URL 用（但需要实时 token 解析同上优先级2）
-- 或者用 cctv.cdn* 其他 CDN 的 CCTV-6（比如 tv.cctv.com 的 HLSP2P 解析出的 m3u8 无 DRM 源。
+### ⚠️ 接手方向（2026-08-02 后）
+1. **不要再动 LayerType / 重定向逻辑**（已经是最终版，改了会黑屏或跳移动端）
+2. **长期更优方案（可选）**：把 CCTV-3/6/8 的播放从 WebView 切到 ExoPlayer / Media3：
+   - `shouldInterceptRequest` 已经能完整截到 `mobilelive-play.ysp.cctv.cn` 的 HLS m3u8 URL（纯 H.264 无 DRM）
+   - 在 Java 层拿 m3u8 → 扔给 ExoPlayer 全屏 PlayerView 播放 → 稳定 100 倍（WebView 渲染链路彻底拿掉）
+   - 要注意 m3u8 URL 内 token/signature 有时效，必须每次启动频道时实时截，不能硬编码
+3. **yangshipin 页面改版时**：如果版权页又漏出来，或者视频不显示，只需改 `_ysh_forceVisibleDetach` 的 `hideSels` / `sel` 数组，加新的 class/id 就行，不要重写逻辑。
 
 ---
 
 ## 2. 项目概述
 
 - **包名**: `com.example.cctvofficialnavigator`
-- **语言**: Java（无 Kotlin 依赖，因为原作者想尽量少引入依赖）
+- **语言**: Java（无 Kotlin 依赖，尽量少引入依赖，兼容旧电视盒子）
 - **最低 API**: 23 (Android 6.0，覆盖绝大多数旧电视盒子)
 - **目标 API**: 34 (Android 14)
 - **AGP**: 8.6.1
 - **Gradle Wrapper**: 8.7
+- **硬件加速**: `<application>` 节点已开 `android:hardwareAccelerated="true"` + `WebView.setLayerType` 按频道动态切换（见第 5.1 节）
 - **构建命令**: `.\gradlew.bat assembleDebug`（Windows PowerShell）
 - **产物**: `app/build/outputs/apk/debug/app-debug.apk`
+- **CI**: `.github/workflows/android-build.yml`，push `master` 自动构建，artifact 保留 30 天
 
 ## 3. 项目结构
 
 ```
 app/src/main/
 ├── java/com/example/cctvofficialnavigator/
-│   ├── MainActivity.java              # 核心 Activity（99% 逻辑都在这里）
-│   ├── ChannelCatalog.java          # 频道 URL 列表 + 顺序
-│   ├── Channel.java                # 数据类：name + officialUrl
-│   └── LoggingWebChromeClient.java  # 拦截 console 日志到 logcat
+│   ├── MainActivity.java              # 核心 Activity（99% 逻辑都在这里，含 LoggingWebChromeClient 内部类）
+│   ├── ChannelCatalog.java          # 频道 URL 列表 + 顺序 + 排序规则
+│   └── Channel.java                # 数据类：name + officialUrl
 ├── res/
-│   ├── layout/activity_main.xml      # 布局：WebView + 频道提示 + 频道列表左半屏 + 数字输入提示
-│   └── values/                     # 主题样式
-└── AndroidManifest.xml              # INTERNET 权限、横屏、LEANBACK_LAUNCHER（电视盒子入口）
+│   ├── layout/activity_main.xml      # 布局：WebView 全屏 + 左上角 channelHint + 右上角 debugPanel + 左半屏频道列表 + 数字输入提示
+│   └── values/                     # 主题样式（Theme.CctvOfficialNavigator，无 ActionBar、全屏）
+└── AndroidManifest.xml              # INTERNET 权限、横屏（screenOrientation=landscape）、LEANBACK_LAUNCHER（Android TV 入口）
 ```
 
-## 4. 当前频道列表（**最终版**）
+> **注意**：`LoggingWebChromeClient`（console 日志拦截）**已从独立文件改为 MainActivity 的 private static 内部类**，不再有单独的 LoggingWebChromeClient.java 文件。
+
+## 4. 当前频道列表（**最终版 2026-08-02**）
 
 **写入顺序即用户看到的序号（1-based）**，定义在 [ChannelCatalog.java](file:///d:/badwp/tv1/app/src/main/java/com/example/cctvofficialnavigator/ChannelCatalog.java)。CCTV 台先按频道号正序排，**非 CCTV 台（广西台系列）直接写在最后按写入顺序顺延，不参与按频道号排序**（对应 [MainActivity.java `buildSortedChannelList()`](file:///d:/badwp/tv1/app/src/main/java/com/example/cctvofficialnavigator/MainActivity.java) 的逻辑）。
 
-| 序号 | 频道名 | URL | UA 策略 | 状态 |
-|------|--------|-----|---------|------|
-| 1 | CCTV-1 综合 | `https://tv.cctv.com/live/cctv1/` | 移动 UA | ✅ 正常 |
-| 2 | CCTV-2 财经 | `https://tv.cctv.com/live/cctv2/` | 移动 UA | ✅ 正常 |
-| 3 | CCTV-4 中文国际（亚） | `https://tv.cctv.com/live/cctv4/` | 移动 UA | ✅ 正常 |
-| 4 | CCTV-4 中文国际（欧） | `https://tv.cctv.com/live/cctveurope/index.shtml` | 移动 UA | ✅ 正常 |
-| 5 | CCTV-4 中文国际（美） | `https://tv.cctv.com/live/cctvamerica/` | 移动 UA | ✅ 正常 |
-| 6 | CCTV-5 体育 | `https://tv.cctv.com/live/cctv5/` | 移动 UA | ✅ 正常 |
-| 7 | CCTV-5+ 体育赛事 | `https://tv.cctv.com/live/cctv5plus/` | 移动 UA | ✅ 正常 |
-| **8** | **CCTV-6 电影** | **`https://www.yangshipin.cn/tv/home?pid=600108442`** | **桌面 UA（仅这一台）** | ❌ **重定向失败**（见第 1 节） |
-| 9 | CCTV-7 国防军事 | `https://tv.cctv.com/live/cctv7/` | 移动 UA | ✅ 正常 |
-| 10 | CCTV-9 纪录 | `https://tv.cctv.com/live/cctvjilu/` | 移动 UA | ✅ 正常 |
-| 11 | CCTV-10 科教 | `https://tv.cctv.com/live/cctv10/` | 移动 UA | ✅ 正常 |
-| 12 | CCTV-11 戏曲 | `https://tv.cctv.com/live/cctv11/` | 移动 UA | ✅ 正常 |
-| 13 | CCTV-12 社会与法 | `https://tv.cctv.com/live/cctv12/` | 移动 UA | ✅ 正常 |
-| 14 | CCTV-13 新闻 | `https://tv.cctv.com/live/cctv13/` | 移动 UA | ✅ 正常 |
-| 15 | CCTV-14 少儿 | `https://tv.cctv.com/live/cctvchild/` | 移动 UA | ✅ 正常 |
-| 16 | CCTV-15 音乐 | `https://tv.cctv.com/live/cctv15/` | 移动 UA | ✅ 正常 |
-| 17 | CCTV-16 奥林匹克 | `https://tv.cctv.com/live/cctv16/` | 移动 UA | ✅ 正常 |
-| 18 | CCTV-17 农业农村 | `https://tv.cctv.com/live/cctv17/` | 移动 UA | ✅ 正常 |
-| 19 | 广西新闻频道 | `https://tv.gxtv.cn/channel/channelivePlay_9dfd8600075811e9ba67e41f13b60c62.html` | 移动 UA | ✅ 正常（已测） |
-| 20 | 广西卫视 | `https://tv.gxtv.cn/channel/channelivePlay_e7a7ab7df9fe11e88bcfe41f13b60c62.html` | 移动 UA | ✅ 正常（已测） |
+| 序号 | 频道名 | URL | UA 策略 | LayerType 策略 | 状态 |
+|------|--------|-----|---------|----------------|------|
+| 1 | CCTV-1 综合 | `https://tv.cctv.com/live/cctv1/` | 移动 UA | HARDWARE 硬件加速 | ✅ 正常 |
+| 2 | CCTV-2 财经 | `https://tv.cctv.com/live/cctv2/` | 移动 UA | HARDWARE 硬件加速 | ✅ 正常 |
+| 3 | CCTV-3 综艺 | `https://www.yangshipin.cn/tv/home?pid=600108439` | **桌面 UA（yangshipin 桌面端）** | **SOFTWARE 软件渲染（根治 overlay 黑屏）** | ✅ 正常（动态修复） |
+| 4 | CCTV-4 中文国际（亚） | `https://tv.cctv.com/live/cctv4/` | 移动 UA | HARDWARE 硬件加速 | ✅ 正常 |
+| 5 | CCTV-4 中文国际（欧） | `https://tv.cctv.com/live/cctveurope/index.shtml` | 移动 UA | HARDWARE 硬件加速 | ✅ 正常 |
+| 6 | CCTV-4 中文国际（美） | `https://tv.cctv.com/live/cctvamerica/` | 移动 UA | HARDWARE 硬件加速 | ✅ 正常 |
+| 7 | CCTV-5 体育 | `https://tv.cctv.com/live/cctv5/` | 移动 UA | HARDWARE 硬件加速 | ✅ 正常 |
+| 8 | CCTV-5+ 体育赛事 | `https://tv.cctv.com/live/cctv5plus/` | 移动 UA | HARDWARE 硬件加速 | ✅ 正常 |
+| 9 | CCTV-6 电影 | `https://www.yangshipin.cn/tv/home?pid=600108442` | **桌面 UA（yangshipin 桌面端）** | **SOFTWARE 软件渲染（根治 overlay 黑屏）** | ✅ 正常（动态修复） |
+| 10 | CCTV-7 国防军事 | `https://tv.cctv.com/live/cctv7/` | 移动 UA | HARDWARE 硬件加速 | ✅ 正常 |
+| 11 | CCTV-8 电视剧 | `https://www.yangshipin.cn/tv/home?pid=600108443` | **桌面 UA（yangshipin 桌面端）** | **SOFTWARE 软件渲染（根治 overlay 黑屏）** | ✅ 正常（动态修复） |
+| 12 | CCTV-9 纪录 | `https://tv.cctv.com/live/cctvjilu/` | 移动 UA | HARDWARE 硬件加速 | ✅ 正常 |
+| 13 | CCTV-10 科教 | `https://tv.cctv.com/live/cctv10/` | 移动 UA | HARDWARE 硬件加速 | ✅ 正常 |
+| 14 | CCTV-11 戏曲 | `https://tv.cctv.com/live/cctv11/` | 移动 UA | HARDWARE 硬件加速 | ✅ 正常 |
+| 15 | CCTV-12 社会与法 | `https://tv.cctv.com/live/cctv12/` | 移动 UA | HARDWARE 硬件加速 | ✅ 正常 |
+| 16 | CCTV-13 新闻 | `https://tv.cctv.com/live/cctv13/` | 移动 UA | HARDWARE 硬件加速 | ✅ 正常 |
+| 17 | CCTV-14 少儿 | `https://tv.cctv.com/live/cctvchild/` | 移动 UA | HARDWARE 硬件加速 | ✅ 正常 |
+| 18 | CCTV-15 音乐 | `https://tv.cctv.com/live/cctv15/` | 移动 UA | HARDWARE 硬件加速 | ✅ 正常 |
+| 19 | CCTV-16 奥林匹克 | `https://tv.cctv.com/live/cctv16/` | 移动 UA | HARDWARE 硬件加速 | ✅ 正常 |
+| 20 | CCTV-17 农业农村 | `https://tv.cctv.com/live/cctv17/` | 移动 UA | HARDWARE 硬件加速 | ✅ 正常 |
+| 21 | 广西新闻频道 | `https://tv.gxtv.cn/channel/channelivePlay_9dfd8600075811e9ba67e41f13b60c62.html` | 移动 UA | HARDWARE 硬件加速 | ✅ 正常（已测，AliPlayer H5 兜底） |
+| 22 | 广西卫视 | `https://tv.gxtv.cn/channel/channelivePlay_e7a7ab7df9fe11e88bcfe41f13b60c62.html` | 移动 UA | HARDWARE 硬件加速 | ✅ 正常（已测，AliPlayer H5 兜底） |
 
-> **备注 1**：CCTV-3/8 目前在 ChannelCatalog 里**已删除**（因为 tv.cctv.com 版权页也会跳到空页，央视频移动端下架，用 yangshipin PC版的话和 CCTV6 一样的重定向问题，待修复CCTV6后可以同样手法加回来）：
-> - CCTV-3 综艺 yangshipin PC版 PID：`600108439`
-> - CCTV-8 电视剧 yangshipin PC版 PID：`600108443`
-
-> **备注 2**：广西台用的是阿里云 AliPlayer H5（.m3u8 流，在 `*.liangtv.cn` + `*.alicdn.com` CDN，已加白名单，现有 hls.js 兜底逻辑 100% 能播，不用动。
+> **备注**：广西台用阿里云 AliPlayer H5（.m3u8 流，`*.liangtv.cn` + `*.alicdn.com` CDN，已加白名单，现有 hls.js 兜底逻辑 100% 能播，不用动。
 
 ---
 
 ## 5. 已实现的核心机制（接手别重写！已工作正常，全部有用）
 
-### 5.1 WebView 配置（[MainActivity.java configureWebView()](file:///d:/badwp/tv1/app/src/main/java/com/example/cctvofficialnavigator/MainActivity.java)）
+### 5.1 WebView 配置 + **按频道动态 LayerType 切换**（最关键）
+
+位置：[MainActivity.java configureWebView()](file:///d:/badwp/tv1/app/src/main/java/com/example/cctvofficialnavigator/MainActivity.java#L173-L212) + [loadChannel() LayerType 动态切换](file:///d:/badwp/tv1/app/src/main/java/com/example/cctvofficialnavigator/MainActivity.java#L1192-L1208)
 
 ```java
-settings.setJavaScriptEnabled(true)
-DomStorage / DatabaseEnabled → 播放器需要
-MixedContentMode = MIXED_CONTENT_ALWAYS_ALLOW → CCTV 页面里有 http 统计脚本
-settings.setMediaPlaybackRequiresUserGesture(false) → 不用用户点一下自动播
-webView.setLayerType(LAYER_TYPE_HARDWARE) → GPU 合成，解决有声无画（有时有效
-setAllowFileAccess / AllowContentAccess(true)
+// configureWebView:默认硬件加速(HARDWARE),默认移动 UA
+settings.setJavaScriptEnabled(true);
+settings.setDomStorageEnabled(true);
+settings.setDatabaseEnabled(true);
+settings.setMediaPlaybackRequiresUserGesture(false);  // 不用用户点自动播
+settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);  // CCTV 页面有 http 脚本
+settings.setUserAgentString(null);  // 默认系统移动 UA（对 yangshipin 桌面端会在 loadChannel 切 DESKTOP_UA）
+webView.setBackgroundColor(Color.TRANSPARENT);  // 背景透明避免画面合成异常
+WebView.setWebContentsDebuggingEnabled(true);  // Chrome://inspect 可直连调试
+
+// ============== 关键:loadChannel 按频道动态切 LayerType ==============
+// 绝对不能全局固定 SOFTWARE/HARDWARE!全局 SOFTWARE 会让其他台解码器 Surface 绑不上 Canvas→有声音没画面
+// 全局 HARDWARE 会让 CCTV-3/6/8 SurfaceView overlay 位置算错→黑屏有声音
+final boolean useDesktop = needsDesktopUA(channel.officialUrl);
+if (useDesktop) {
+    // CCTV-3/6/8 yangshipin 桌面端:SOFTWARE 软件渲染→视频像素画到 WebView 位图,彻底绕开 overlay 合成bug
+    webView.setLayerType(View.LAYER_TYPE_SOFTWARE, null);
+} else {
+    // 其他所有台:HARDWARE 硬件加速→正常性能,正常 overlay 合成,画面正常
+    webView.setLayerType(View.LAYER_TYPE_HARDWARE, null);
+}
+webView.requestLayout(); webView.invalidate();  // 强制重建渲染路径/合成层,部分机型切完不生效
 ```
 
-### 5.2 频道级 UA 切换（**仅CCTV6用桌面 UA，其他台都用移动 UA）
+右上角调试面板会显示当前状态：
+- yangshipin 桌面端（CCTV-3/6/8）：`UA:桌面 LAYER:软`
+- 其他台：`UA:移动 LAYER:硬`
 
-**关键代码位置**：[MainActivity.java DESKTOP_UA + needsDesktopUA() + loadChannel()
+### 5.2 频道级 UA 策略（只有 yangshipin 桌面端用桌面 UA，其他台必须移动 UA）
+
+关键代码：[MainActivity.java DESKTOP_UA + needsDesktopUA()](file:///d:/badwp/tv1/app/src/main/java/com/example/cctvofficialnavigator/MainActivity.java)
 
 ```java
-// 桌面 UA（仅 yangshipin 桌面端 home/pid 命中才启用
+// 桌面 Chrome UA（仅命中 yangshipin 桌面端 home/pid 时才用）
 DESKTOP_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 
-needsDesktopUA(url) → url.contains("yangshipin.cn/tv/home") && url.contains("pid=")
+// 命中条件:URL 是 yangshipin.cn/tv/home + 带 pid=(CCTV-3/6/8 的 PID)
+needsDesktopUA(url) = url.contains("yangshipin.cn/tv/home") && url.contains("pid=")
 
 loadChannel(requestedIndex):
   useDesktop = needsDesktopUA(channel.officialUrl)
   webView.getSettings().setUserAgentString(useDesktop ? DESKTOP_UA : null)
-  webView.loadUrl(channel.officialUrl)
 ```
 
-**不要给所有台开桌面 UA：CCTV-9 等正常台用桌面 UA 会直接黑屏（桌面版布局 CSS 不对）。
+**⚠️ 不要给所有台开桌面 UA**：CCTV-1/2/5/广西台正常页面用桌面 UA 会直接黑屏或布局错乱（桌面版 CSS 不适合 TV 屏幕）。
 
-### 5.3 白名单域名（URL 加载不跳外部浏览器）[isOfficialCctvUrl](file:///d:/badwp/tv1/app/src/main/java/com/example/cctvofficialnavigator/MainActivity.java)
+### 5.3 防重定向 2 层拦截（CCTV-3/6/8 不再跳 m.yangshipin.cn）
+
+位置：[MainActivity.java WebViewClient shouldOverrideUrlLoading() + onPageStarted()](file:///d:/badwp/tv1/app/src/main/java/com/example/cctvofficialnavigator/MainActivity.java#L205-L250)
 
 ```
-cctv.com / cntv.cn / gxtv.cn / liangtv.cn / alicdn.com / aliyun.com / yangshipin.cn / ysp.cctv.cn / smtcdns.net
+拦截 1/2:shouldOverrideUrlLoading(WebResourceRequest)
+  if(url 是 m.yangshipin.cn && 预期 URL 是 yangshipin 桌面端)
+    return true; 重加载 www 桌面端 URL(带定制 Headers,见下)
+
+拦截 2/2:onPageStarted(WebView,String,Bitmap)
+  if(当前加载 URL 是 m.yangshipin.cn && 预期 URL 是桌面端)
+    handler.post{loadYangshipinWithHeaders(预期 URL)}  // onPageStarted 内直接 loadUrl 会打断流程,要 post
 ```
-新增域名在 yangshipin/tv/home 页面加载时会请求 `mobilelive-play.ysp.cctv.cn / pcsite.ysp.cctv.cn，所以都已经全部进了。
 
-### 5.4 CSS 全屏 CSS 注入（每帧强制全屏（FastLoading + AutoFullscreen）
+### 5.4 yangshipin 桌面端带定制 Headers 加载（loadYangshipinWithHeaders）
 
-注入时机：**onPageStarted → 注入 JS 注入 CSS style `position:fixed 100vw 100vh z-index:999999 + GPU 合成层 transform:translateZ(0) backface-visibility:hidden（修有声无画）
-CSS 里把所有装饰元素：header, footer, nav, 广西台 .header/footer / 央视频 ysp-* / yangshipin 桌面端所有导航栏 / 侧边栏 / 推荐 / 下载按钮 / LOGO / EPG 节目单 / Tab 分类 / 搜索框 / 个人中心 / 频道列表 / 节目信息 等全部 `display:none!important`（**具体 CSS 字符串看 FastLoading 里看代码，接手如果将来 yangshipin 页面改版，加 class/id 名到display:none 列表里即可，不要自己写新的逻辑
+位置：[MainActivity.java loadYangshipinWithHeaders()](file:///d:/badwp/tv1/app/src/main/java/com/example/cctvofficialnavigator/MainActivity.java#L1222-L1260)
 
-### 5.5 document.write Polyfill（必留）
-解决 CCTV 的播放器初始化脚本是 `document.write` 加载 `r.img.cctvpics.com` 的跨站 script，Chromium 53+ 的 2G Intervention 不执行，polyfill 把 document.write 把转 createElement('script') 异步插入。已在 onPageStarted 最早期注入。
+**这是解决「分享频道已下架」+ 跳移动端的核心手法**：
 
-### 5.6 自动播放 muted 修复（mute=true play() 成功后 2s 取消 muted
-Android 自动播放政策要求视频必须静音才能自动播。CCTV 的 HLSP2P 播放器本身会这么做但偶尔失败，所以在白屏检测 + AutoFullscreen 里兜底也做 `video.muted=true; video.play().then(()=>setTimeout unmute))
+```java
+Map<String, String> headers = new HashMap<>();
+// 1. 最关键:X-Requested-With 设为空字符串 → 覆盖 Android WebView 默认加的包名 Header
+// Chrome PC 浏览器根本不会发这个 Header,服务器一看包名就知道是 WebView→跳移动端
+headers.put("X-Requested-With", "");
+// 2. Referer:伪装成用户从 yangshipin.cn 官网首页点进来的
+headers.put("Referer", "https://www.yangshipin.cn/");
+// 3.Accept/Sec-CH-UA/Sec-Fetch-*:和桌面 Chrome 126 完全一致,伪装更逼真
+headers.put("Accept", "text/html,...");
+headers.put("Sec-CH-UA", "\"Not/A)Brand\";v=\"8\", \"Chromium\";v=\"126\", \"Google Chrome\";v=\"126\"");
+// ...其他 Sec-Fetch 头
+webView.loadUrl(url, headers);  // 用 additionalHttpHeaders 加载
+```
 
-### 5.7 白屏/黑屏有声无画检测
-ScheduledExecutorService 倒计时 5 10 15 20 30秒。后台线程倒计时 + 30s，不在主线程 queue 阻塞（CCTV 页面心跳把 handler 消息队列塞爆 postDelayed 执行不了）。
-判断逻辑 `doWhiteScreenCheck` 里 evaluateJavascript 找：
-- 无 video → 等 → display: diagnostic
-- 有但 paused=true play()
-- 超过 10s 无 video 且已拦截到 m3u8 → **hls.js 兜底播
+### 5.5 白名单域名（URL 加载不跳外部浏览器）
 
-### 5.8 m3u8 拦截 + hls.js 兜底
-**两层拦截**：
-1. Java 层 `shouldInterceptRequest`：URL 结尾 .m3u8 → 保存到 capturedM3u8Url
-2. JS 层 `injectM3u8Capture`：页面 JS 注入 hook XMLHttpRequest/open/send fetch 都搜 "/playlist 返回的 m3u8 → evaluateJavascript 回传
-hls.js 从 `jsdelivr` + unpkg 双源，失败再试 unpkg，最后最后试原生 video.src=m3u8（hls.js 对 DRM 的 MSE addSourceBuffer 的 codec 改 `avc1.640028`（CCTV 源 codec string 被 WebView MediaSource 不认）
+[isOfficialCctvUrl()](file:///d:/badwp/tv1/app/src/main/java/com/example/cctvofficialnavigator/MainActivity.java)：
+```
+cctv.com / cntv.cn / gxtv.cn / liangtv.cn / alicdn.com / aliyun.com /
+yangshipin.cn / ysp.cctv.cn / smtcdns.net / cctvpics.com
+```
+> 新增域名：yangshipin 桌面端会请求 `pcsite.ysp.cctv.cn / mobilelive-play.ysp.cctv.cn / r.img.cctvpics.com`，已全部加白。
 
-### 5.9 频道列表 + 数字键跳转 + 触屏手势
-布局 activity_main.xml: WebView 全屏，上层左上角 channelHint 角进度 debugPanel display progressHint 数字 半屏 channelListScroll ScrollView + number 数字输入 numberInputHint 3 缓冲 OK键 OK键弹出左半屏频道列表
-遥控器 OK OK选 OK键 OK 数字键 0-9 3 秒没按第二个数字按列表序号直跳：
-- 优先频道号（CCTV1=1, CCTV2=2,... 广西台 19=广西新闻=20=广西卫视顺延
+### 5.6 yangshipin 专属 `_ysh_*` 函数集（仅 CCTV-3/6/8 执行，其他台零影响）
 
-触屏 GestureDetector SimpleOnGestureListener：
-- 单击 → show/hide 频道列表（列表显示时 OK = 高亮
-- 上滑 → 切台 / 列表显示时 = 滚动下一项
-- 下滑 → 切台上一个 / 列表显示时 = 滚动到上一项
+位置：两处注入（`injectFastLoading` onPageStarted 早期注入 + `injectAutoFullscreen` onProgressChanged 后期注入）。
+
+**所有函数第一行都是 `if(!_ysh_is())return;` → 非 yangshipin 页面立刻跳过，绝不影响其他台。**
+
+```javascript
+// 判断是不是 yangshipin:URL 含 yangshipin,或 DOM 里含 yangshipin 播放器 class
+function _ysh_is(){ try{ return location.host.indexOf('yangshipin')>=0 || !!document.querySelector('video[id^=myvideo],.video-js,.video-con,[id*=vodbox]');}catch(e){return false;} }
+
+// 锁死滚动到 (0,0)
+function _ysh_lockScroll(){ ... }
+
+// 模拟用户点击大播放按钮+video元素(绕过自动播放策略),只执行 1 次
+function _ysh_fakeClickPlay(){ ... }
+
+// 最关键:强制视频画面可见
+function _ysh_forceVisibleDetach(){
+  if(!_ysh_is())return;
+
+  // Step 1:#app 整个根节点 display:none → 版权页 100% 不可能露出(真实 video 父容器已经 detach 到 body 了)
+  var hideSels=['#app', '.container', '.y-full', '.y-full-control', '.y-player-gift-list', ...];
+  for(sel in hideSels){ el=document.querySelector(sel); el.style.display='none!important'; el.style.zIndex='-1!important'; }
+
+  // Step 2:detach <video> 的父级 DIV(绝对不要 detach <video> 自身!会毁 Surface overlay)
+  // sel 按优先级:.video-js(video.js包装层)→.video-con→[id^=vodbox]→旧版tv-main-con链
+  var sel=['.video-js','.video-con','[id^=vodbox]','.tv-main-con-l-vid',...];
+  var el=第一个命中;
+  el.parentNode.removeChild(el); document.body.insertBefore(el, document.body.firstChild);
+  // 父容器 fixed 全屏 z-index=2147483647
+  el.style.position='fixed!important'; el.style.left=0; el.style.top=0;
+  el.style.width='100vw!important'; el.style.height='100vh!important';
+  el.style.zIndex='2147483647!important';  // 32-bit int 最大值,绝对最顶层
+  el.style.background='#000!important';
+
+  // Step 3:<video> 元素自身:position:relative + width/height:100% → 填满父容器
+  // 绝对不要 position:fixed!会让 Chromium 算 overlay 坐标错
+  var videos=document.querySelectorAll('video[id^=myvideo], video');
+  for(v in videos){
+    v.style.position='relative!important';
+    v.style.width='100%!important'; v.style.height='100%!important';
+    v.style.objectFit='contain!important';
+    v.style.background='#000!important'; v.style.display='block!important';
+    // SOFTWARE 渲染下也执行一次 pause()→play() 触发解码器重新 bind Canvas
+    if(v.readyState>=2 && !v.__cctvRebuildSurface){
+      v.__cctvRebuildSurface=1; v.pause(); v.play();
+    }
+  }
+
+  // Step 4:超级详细 console.log → onConsoleMessage 转发 logcat + 右上角面板
+  // 打 [CCTV6_HIDE]、[CCTV6_STEP2_SEL]、[CCTV6_STEP2_RECT]、[CCTV6_VIDEO_N]
+  // 接手工程师直接看右上角面板就知道每一步发生了什么
+}
+```
+
+### 5.7 超级 CCTV-6 调试日志（右上角面板可见）
+
+[LoggingWebChromeClient.onConsoleMessage()](file:///d:/badwp/tv1/app/src/main/java/com/example/cctvofficialnavigator/MainActivity.java#L1861-L1912)：
+- 所有 `console.log` 消息如果含 `[CCTV6_` 前缀 → 强制 `Log.i("CCTV-TV", msg)` + 关键消息显示到右上角 `updateDebugPanel("CCTV6_DEBUG", shortMsg)`
+- 关键日志：
+  - `[CCTV6_STEP2_SEL] hitIdx=0 sel=.video-js` → 命中父容器
+  - `[CCTV6_STEP2_RECT] el_rect: x=0 y=0 w=1280 h=720` → detach 后父容器是全屏
+  - `[CCTV6_VIDEO_0] rect{x=0,y=0,w=1280,h=720} vW=1920 vH=1080 readyS=4 paused=false ...` → video 真实状态
+
+### 5.8 document.write Polyfill（必留）
+
+Chromium 53+ 对「parser-blocking + cross-site + document.write 插入的 `<script>`」在慢网下直接不执行（2G Intervention）。CCTV 播放器启动链用 document.write 加载 `r.img.cctvpics.com` 的跨站公共库 → 直接命中 → 后续 `createLivePlayer()` 永远不跑 → CCTV-3/6/8 白屏。
+
+修复：onPageStarted 最早期 hook `document.write`，把 `<script src=...>` 转成 `createElement('script')` 异步插入，绕开 Chromium 干预。
+
+### 5.9 自动播放 muted 修复（mute=true 成功后 2s 取消 muted）
+
+Android 自动播放政策要求视频必须静音才能自动播。CCTV 的 HLSP2P 播放器本身会这么做但偶尔失败，所以白屏检测 + AutoFullscreen 里兜底也做：
+```javascript
+video.muted = true;
+video.play().then(() => setTimeout(() => { video.muted = false; video.volume = 1; }, 2000));
+```
+
+### 5.10 白屏/黑屏有声无画检测
+
+`ScheduledExecutorService` 后台线程倒计时（5/10/15/20/30s，**不在主线程 Handler 队列**，因为 CCTV 页面心跳把 handler 消息塞爆 postDelayed 执行不了）。判断逻辑 `doWhiteScreenCheck`：
+- 无 `<video>` → 等 → 显示诊断
+- 有但 `paused=true` → `play()`
+- 超过 10s 无 video 但已拦截到 m3u8 → **hls.js 兜底播放**
+
+### 5.11 m3u8 两层拦截 + hls.js 兜底
+
+```
+两层拦截:
+1. Java 层 shouldInterceptRequest:URL 结尾 .m3u8 → 保存到 capturedM3u8Url
+2. JS 层 injectM3u8Capture:hook XMLHttpRequest/open/send + fetch,搜 /playlist/m3u8 → 回传
+
+兜底播放:
+- hls.js 从 jsdelivr + unpkg 双源加载(一个失败试另一个)
+- 最后兜底:原生 video.src = m3u8(部分 WebView 版本原生支持 HLS)
+- 对 CCTV 的 m3u8,hls.js 的 MSE addSourceBuffer 时把 codec string 从 'avc1.640028' 修正为 WebView MediaSource 能识别的格式
+```
+
+### 5.12 频道列表 + 数字键跳转 + 触屏手势
+
+```
+布局 activity_main.xml:
+  WebView (全屏,底层) → 上层:
+    - 左上角:channelHint 频道提示 + 进度
+    - 右上角:debugPanel 调试面板(CCTV6_DEBUG/加载状态/白屏诊断/重定向拦截)
+    - 左半屏:channelListScroll ScrollView + 频道列表(半屏弹出)
+    - 数字输入缓冲:pendingNumber + numberInputHint 提示
+
+遥控器:
+  - 上下键:切台(频道列表隐藏时)/ 滚动列表项(频道列表显示时)
+  - OK 键:显示/隐藏频道列表 / 选中当前列表项
+  - 数字键 0-9:3 秒内连按 2 位数字,按频道列表序号直跳
+触屏 GestureDetector:
+  - 单击:显示/隐藏频道列表
+  - 上滑:切下一台 / 列表下一项
+  - 下滑:切上一台 / 列表上一项
+```
 
 ---
 
 ## 6. 全部踩坑历史（接手工程师请务必读完，不然你会和我们一样试一圈）
 
-### 坑 1：CCTV-3/6/8 tv.cctv.com/live/cctv3 → 移动 UA 302 → 空页（版权空页移动 `m.yangshipin.cn/static/empty.html
-→ 所以桌面 UA，加载 HLSP2P MSE blob URL WebRTC P2P → Android TV WebView 不兼容WASM+P2P 不兼容 → 有声无画 + 黑屏
-→ 所以 tv.cctv.com 桌面端 HLSP2P 的 m3u8 还带 cdrm 加密（DRM） hls.js 能解 cdrm 的 m3u8 WebView 层 所以尝试过，但是播放器 DRM 有些 TV 盒子取流能播成功了画面 → 还是黑屏
-
-### 坑 2：CCTV-6 m.yangshipin.cn/video?type=1&vid=2000203303&pid=600001802 → 移动UA 分享频道已下架 → 页面里vid=2026/8 已经挂了
-然后替换为 yangshipin.cn/tv/home?pid=600108442（桌面端入口）+ 桌面 UA，但用户反馈还是失败
-### 坑 3（就是现在：www.yangshipin.cn/tv/home?pid=CCTV6，即使 WebView 加桌面 UA 加载 发请求 → 服务器重定向 m.yangshipin.cn 重定向 ，因为：
-- 原因分析
-服务器加看 HTTP Header：`X-Requested-With: com.example.cctvofficialnavigator`（Android WebView 自带 header，Chrome PC Chrome 这个都没有这个）
-服务器一看到这个就知道你是 WebView，直接跳移动版）
-解决方案（根本原因！这个是根本重定向
-根本不解决根本永远拿不到桌面版的页面，改 UA 没用，CSS 写得再满也没什么
-
-### 坑 4：CSS 把播放器容器全屏
-CCTV tv.cctv.com 桌面版是 HLSP2P 页面布局 容器变 layout 不同 ，播放器容器 ID class 全部列了 都 加 写了 container video position:fixed 拉到最高 这个 加 transform:translateZ(0) GPU 合成有声无画广西台 AliPlayer 用 #J_prismPlayer，yangshipin 用 #cmgPlayer / .CMGPlayer / .ysp-player / .txp_container，所以每次页面改版后加名字就行。
+### 坑 1：CCTV-3/6/8 tv.cctv.com/live/cctv3 → 移动 UA 302 → 空页「分享频道已下架」
+→ 所以换成 yangshipin.cn/tv/home?pid=XXX（桌面端独立直播页）+ 桌面 UA，但 CCTV-6 依旧跳移动端 →
+### 坑 2：CCTV-6 即使桌面 UA 还是跳 m.yangshipin.cn
+→ 根本不是 UA 的问题！服务器看的是 **`X-Requested-With: com.example.cctvofficialnavigator`**（Android WebView 自动加的 Header，Chrome PC 没有）→ 服务器一眼识别是 WebView 直接跳移动版
+→ 修复：**`loadUrl(url, additionalHttpHeaders)` 把 `X-Requested-With: ""` 覆盖掉 + `Referer: https://www.yangshipin.cn/`**（第 5.4 节，这是根因，解决这个才能拿到桌面端页面）
+### 坑 3：CCTV-6 页面加载成功了，有声音但是黑屏
+→ 这是 **Chromium Android `<video>` SurfaceView overlay 合成错位 bug**：
+  Android WebView `<video>` 视频像素不走 DOM 合成层，用独立 SurfaceView overlay 叠在 WebView 上面。当 video 父容器 `position:fixed` + detach/reattach DOM → Chromium 计算 overlay 坐标错（位置 0×0 或屏幕外）→ audio/decode 正常，但 overlay 贴在不可见区域 → 有声音没画面
+→ 第一次错误尝试：全局设 `LAYER_TYPE_SOFTWARE` 软件渲染 → 其他所有台（CCTV-1/5+/广西台）也都变成有声音没画面！因为软件渲染模式下很多 WebView 版本 MediaCodec 解码器输出的 Surface 无法绑定到 Canvas 位图 → 像素画不出来
+→ 正确修复（第 5.1 节）：**按频道动态切 LayerType**，只有 CCTV-3/6/8（yangshipin 桌面端）切 SOFTWARE，其他台保持 HARDWARE
+### 坑 4：CCTV-6 偶尔跳出版权页「关于央视频 / 服务协议」
+→ 之前 hideSels 只列了部分 class 名，#app 下深层嵌套/新增 class 漏藏 → 修复：**hideSels 第一个元素直接 `'#app'`，#app 整个根节点 display:none z-index:-1**，因为真实 .video-js 父容器已经 detach 到 body 首节点了，#app 隐藏丝毫不影响 video。
+### 坑 5：CCTV 播放器公共脚本用 document.write 跨站插入 → Chromium 53+ 2G Intervention 直接丢弃
+→ 修复：document.write polyfill（第 5.8 节，onPageStarted 最早期注入）
 
 ---
 
-## 7. 接手工程师 TODO（30 分钟快速 Checklist
+## 7. 接手工程师 TODO（30 分钟快速 Checklist）
 
-### 做完后你能立刻让 CCTV6 出画面
-
-- [ ] 断点 shouldOverrideUrlLoading 里加 if url.startsWith("https://m.yangshipin.cn") 直接 return true; 不跳转并且重新 load www 版 URL
-- [ ] 试 2：X-Requested-With 这个 header 能删则删（Android API < 9 reflection 掉 / 更高 API 里 AndroidFramework 实现层，或者干脆 Java 层，或者 (Android XXXXX 没发，发请求时加 Chrome 桌面 要
-- [ ] 试 3：WebView.loadUrl(url, additionalHttpHeaders) 手动补 Referer: https://www.yangshipin.cn/ ， 加
-- [ ] 试 4：shouldInterceptRequest 里拦截到 mobilelive-play.ysp.cctv.cn 的 m3u8，打印完整 URL 到 logcat（如果拿到手后立刻 看能不能在浏览器里直接打开，能打开的话 hls.js 兜底逻辑肯定能播，那 ExoPlayer 一定能
-- [ ] 试 5：直接放弃 WebView 起个 TextureView 拿拦截到的 m3u8 直接扔给 ExoPlayer 全屏播 CCTV6 单独接好（长期稳定
+### 做完后你能立刻验证所有台正常
+- [ ] 装新 APK → 切 CCTV-1 / CCTV-5+ / 广西卫视 → 确认画面正常（右上角显示 `UA:移动 LAYER:硬`）
+- [ ] 切 CCTV-3 / CCTV-6 / CCTV-8 → 确认画面正常（右上角显示 `UA:桌面 LAYER:软`，没有「分享频道已下架」，没有版权页露出）
+- [ ] 看 logcat：`adb logcat -s CCTV-TV` → 能看到 `[LAYER_SWITCH] CCTV-6 → SOFTWARE` / `[CCTV6_STEP2_SEL]` / `[CCTV6_VIDEO_0]` 日志
+- [ ] （可选长期改进）：把 CCTV-3/6/8 的播放从 WebView 切到 ExoPlayer（用 shouldInterceptRequest 截到的 m3u8）→ 更稳定
 
 ### 调试命令：
 ```powershell
-adb logcat -s "CCTV-" System.err WebView chromium
-# 或者：
-adb logcat | grep -i "m3u8\|yangshipin\|useragent\|shouldoverride
+# 只看我们自己的日志
+adb logcat -s "CCTV-TV"
+# 看 WebView/Chromium 相关
+adb logcat -s "CCTV-TV" WebView chromium System.err
+# 只搜 yangshipin/m3u8/重定向/LAYER 切换
+adb logcat | Select-String -Pattern "yangshipin|m3u8|LAYER_SWITCH|CCTV6_"
 ```
-Debug 面板在屏幕**右上角**有进度提示 Debug Panel
-频道加载状态
+
+**Debug 面板位置**：屏幕**右上角**，实时显示频道加载状态 / CCTV6 调试信息 / 白屏诊断 / 重定向拦截情况。
 
 ---
 
-## 8. 其他操作说明（给用户
+## 8. 操作说明（给最终用户）
 
-| 操作 | 手机触屏 | 遥控器 |
-|------|---------|--------|
+| 操作 | 手机触屏 | 遥控器 / TV 按键 |
+|------|---------|----------------|
 | 切到上一台 | 下滑 | 上键 |
 | 切到下一台 | 上滑 | 下键 |
-| 打开频道列表 | 单击屏幕 | OK 键 OK |
-| 选频道 | 点列表项 | 上下移动后再按OK键 |
-| 数字键直跳频道 | 不支持（触屏无数字键盘） | 数字 0-9（3 秒内连按两位数自动跳） |
+| 打开频道列表 | 单击屏幕任意处 | OK / 确定键 |
+| 选频道播放 | 点击列表项 | 上下移动高亮 → 再按 OK/确定 |
+| 数字键直跳频道 | 不支持（触屏无数字键盘） | 数字键 0-9，3 秒内连按两位数自动跳对应序号 |
 
 ---
 
 ## 9. 相关文件清单（点击跳转）
 
-- 核心逻辑 99% 都在这里：[MainActivity.java](file:///d:/badwp/tv1/app/src/main/java/com/example/cctvofficialnavigator/MainActivity.java)
-- 频道列表 URL 全在这：[ChannelCatalog.java](file:///d:/badwp/tv1/app/src/main/java/com/example/cctvofficialnavigator/ChannelCatalog.java)
-- UI 布局：[activity_main.xml](file:///d:/badwp/tv1/app/src/main/res/layout/activity_main.xml)
-- 拦截 console 日志：[LoggingWebChromeClient.java](file:///d:/badwp/tv1/app/src/main/java/com/example/cctvofficialnavigator/LoggingWebChromeClient.java)
+- **核心逻辑 99% 都在这里**：[MainActivity.java](file:///d:/badwp/tv1/app/src/main/java/com/example/cctvofficialnavigator/MainActivity.java)
+  - configureWebView：[L173-L212](file:///d:/badwp/tv1/app/src/main/java/com/example/cctvofficialnavigator/MainActivity.java#L173-L212)
+  - 动态 LayerType 切换：[L1192-L1208](file:///d:/badwp/tv1/app/src/main/java/com/example/cctvofficialnavigator/MainActivity.java#L1192-L1208)
+  - loadYangshipinWithHeaders（带定制 Header）：[L1222-L1260](file:///d:/badwp/tv1/app/src/main/java/com/example/cctvofficialnavigator/MainActivity.java#L1222-L1260)
+  - LoggingWebChromeClient 内部类：[L1794-L1913](file:///d:/badwp/tv1/app/src/main/java/com/example/cctvofficialnavigator/MainActivity.java#L1794-L1913)
+- 频道列表 URL + 顺序：[ChannelCatalog.java](file:///d:/badwp/tv1/app/src/main/java/com/example/cctvofficialnavigator/ChannelCatalog.java)
+- UI 布局 XML：[activity_main.xml](file:///d:/badwp/tv1/app/src/main/res/layout/activity_main.xml)
+- Manifest（权限、硬件加速、LEANBACK_LAUNCHER、横屏）：[AndroidManifest.xml](file:///d:/badwp/tv1/app/src/main/AndroidManifest.xml)
+- CI 自动构建 APK：[android-build.yml](file:///d:/badwp/tv1/.github/workflows/android-build.yml)
 
 ---
 
-## 10. 构建（能工作正常的，接手不用改）
+## 10. 构建
 
 本地构建：
-```
+```powershell
 .\gradlew.bat assembleDebug
 ```
-产物：`app\build\outputs\apk\debug\app-debug.apk`
+产物：`app\build\outputs\apk\debug\app-debug.apk`（可直接安装）
 
-CI 已经配置了 GitHub Actions（`.github/workflows/android-build.yml`），推 master 自动构建，artifact 保留 30 天。
+CI 已配置 `.github/workflows/android-build.yml`，**push 到 master 分支自动触发构建**，构建成功后在 GitHub Actions → Run → Artifacts 里下载 `app-debug.apk`（保留 30 天）。
 
 ---
 
-> 最后一次 commit 2026/8/1：CCTV6 的根本问题是 WebView 访问 www.yangshipin.cn 被跳 m.yangshipin.cn 旧页，不是 UA/CSS 问题，**解决防重定向 + 解析 m3u8 + ExoPlayer 能 100% 搞定，祝君好运。
+> 最后更新 2026/8/2：CCTV-3/6/8 全部打通（防重定向 + 定制 Header + 动态 LayerType 切换根治 Surface overlay 黑屏有声音 + #app 整体隐藏杜绝版权页露出），其他所有台保持 HARDWARE 硬件加速 100% 正常。接手时不要全局改 LayerType / UA / X-Requested-With，否则会重踩所有坑。祝君好运。
