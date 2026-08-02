@@ -329,10 +329,16 @@ public final class MainActivity extends Activity {
                         capturedM3u8Url = url;
                         Log.i("CCTV-TV", "拦截到 m3u8: " + url);
                     }
+                    // ===================== 关键Debug:把m3u8拦截结果显式打到右上角调试面板 =====================
+                    //  用户现在一看右上角就知道:有没有截到m3u8?有没有调用ExoPlayer?瞬间定位问题!
+                    final boolean willCallExo = currentIsYangshipin && !exoPlayerActive;
+                    final String shortUrl = url.length() > 80 ? url.substring(0, 70) + "..." : url;
+                    handler.post(() -> updateDebugPanel("M3U8_" + (willCallExo ? "OK_EXO" : "SKIP"),
+                            (willCallExo ? "将切ExoPlayer:" : "不切ExoPlayer:") + shortUrl));
                     // ================= CCTV-3/6/8 yangshipin 桌面端:截到 m3u8 立刻切 ExoPlayer 原生播放 ===============
                     // 只有当前频道是 yangshipin 桌面端(currentIsYangshipin=true)并且 ExoPlayer 还没启动(exoPlayerActive=false)时才切,
                     // 其他台(CCTV1/5+/广西台)→不切,继续用 WebView 播放
-                    if (currentIsYangshipin && !exoPlayerActive) {
+                    if (willCallExo) {
                         final String finalM3u8Url = url;
                         // shouldInterceptRequest 在子线程,切回主线程操作 UI(隐藏 WebView / 创建 ExoPlayer)
                         handler.post(() -> playYangshipinWithExoPlayer(finalM3u8Url));
@@ -787,8 +793,17 @@ public final class MainActivity extends Activity {
                 "    try{console.log('[CCTV6_STEP0_START] _ysh_forceVisibleDetach running host='+(location.host||'')+' title='+document.title);}catch(e){}" +
                 // Step 1: 直接#app整体隐藏(版权页100%在#app里,整体隐藏绝不可能漏出),比逐个子节点隐藏可靠100倍
                 // 真实.video-js父容器已在Step2 detach到document.body下(脱离#app),所以#app隐藏丝毫不影响video播放
-                "    var hideSels=['#app','.container[data-v-03d5f916]','.container','.y-full','.y-full-bg','.y-full-control','.y-full-control-btn','.volume-muted-tip-container','.video-status-tip','.y-player-gift-list','.y-player-danmu','.y-player-side-panel','.y-player-bottom-bar'];" +
+                // ============ 关键新增:yangshipin桌面端的loading/spinner/遮罩/全力加载中 全隐藏 ============
+                //  CCTV3/8「全力加载中」一直转圈的根因:hls.js解码_Web流失败,但spinner元素一直没隐藏,挡住video画面
+                //  这里把所有class/id名里含loading/load/spinner/spin/mask/overlay/watermark(水印)的元素全部强制隐藏
+                "    var hideSels=['#app','.container[data-v-03d5f916]','.container','.y-full','.y-full-bg','.y-full-control','.y-full-control-btn','.volume-muted-tip-container','.video-status-tip','.y-player-gift-list','.y-player-danmu','.y-player-side-panel','.y-player-bottom-bar'," +
+                "      '[class*=loading]','[class*=load]','[class*=spinner]','[class*=spin]','[class*=mask]','[class*=overlay]','[class*=splash]','[class*=watermark]'," +
+                "      '#loading','.loading','.spinner','.mask','.overlay','.cmg-loading','.ysp-loading','.ysp-spinner','.tv-loading','.live-loading'," +
+                "      '[id*=loading]','[id*=load]','[id*=spinner]','[id*=spin]','[id*=mask]','[id*=overlay]'," +
+                "      '[class*=progress]','[id*=progress]','.progress-bar','.buffer','[class*=buffer]'];" +
                 "    for(var hi=0;hi<hideSels.length;hi++){try{var hn=document.querySelector(hideSels[hi]);if(hn){try{console.log('[CCTV6_HIDE] sel='+hideSels[hi]+' tag='+hn.tagName+' class='+(hn.className||''));}catch(e){}hn.style.setProperty('display','none','important');hn.style.setProperty('visibility','hidden','important');hn.style.setProperty('opacity','0','important');hn.style.setProperty('z-index','-1','important');}}catch(err){}}" +
+                // 额外:遍历所有DOM节点,innerText包含「加载中」/「loading」的节点 → display:none(根治CCTV3/8「全力加载中」文字还在显示的问题)
+                "    try{var allNodes=document.querySelectorAll('*');for(var ni=0;ni<allNodes.length && ni<8000;ni++){var nn=allNodes[ni];if(nn.children && nn.children.length>0)continue;var txt=(nn.innerText||nn.textContent||'').trim();if((txt.length>0 && txt.length<40) && (txt.indexOf('加载中')>=0 || txt.indexOf('Loading')>=0 || txt.indexOf('LOADING')>=0 || txt.indexOf('全力加载')>=0 || txt.indexOf('缓冲')>=0 || txt.indexOf('正在')>=0)){try{console.log('[CCTV6_HIDE_TEXT] txt=\"'+txt+'\" class='+(nn.className||'')+' id='+(nn.id||''));}catch(e){}nn.style.setProperty('display','none','important');nn.style.setProperty('visibility','hidden','important');}}}catch(bigErr){}" +
                 // Step 2: detach VIDEO父级容器DIV(绝对不要detach<video>元素本身)
                 // sel顺序:.video-js(video.js包装层,离video最近)→.video-con→[id^=vodbox]→旧版tv-main-con-*链
                 "    var sel=['.video-js','.video-con','[id^=vodbox]','.tv-main-con-l-vid','.tv-main-con-l','.tv-main-con','.tv-main','.tv','.tv-home'];" +
@@ -884,8 +899,17 @@ public final class MainActivity extends Activity {
                 "    try{console.log('[CCTV6_STEP0_START] _ysh_forceVisibleDetach running host='+(location.host||'')+' title='+document.title);}catch(e){}" +
                 // Step 1: 直接#app整体隐藏(版权页100%在#app里,整体隐藏绝不可能漏出),比逐个子节点隐藏可靠100倍
                 // 真实.video-js父容器已在Step2 detach到document.body下(脱离#app),所以#app隐藏丝毫不影响video播放
-                "    var hideSels=['#app','.container[data-v-03d5f916]','.container','.y-full','.y-full-bg','.y-full-control','.y-full-control-btn','.volume-muted-tip-container','.video-status-tip','.y-player-gift-list','.y-player-danmu','.y-player-side-panel','.y-player-bottom-bar'];" +
+                // ============ 关键新增:yangshipin桌面端的loading/spinner/遮罩/全力加载中 全隐藏 ============
+                //  CCTV3/8「全力加载中」一直转圈的根因:hls.js解码_Web流失败,但spinner元素一直没隐藏,挡住video画面
+                //  这里把所有class/id名里含loading/load/spinner/spin/mask/overlay/watermark(水印)的元素全部强制隐藏
+                "    var hideSels=['#app','.container[data-v-03d5f916]','.container','.y-full','.y-full-bg','.y-full-control','.y-full-control-btn','.volume-muted-tip-container','.video-status-tip','.y-player-gift-list','.y-player-danmu','.y-player-side-panel','.y-player-bottom-bar'," +
+                "      '[class*=loading]','[class*=load]','[class*=spinner]','[class*=spin]','[class*=mask]','[class*=overlay]','[class*=splash]','[class*=watermark]'," +
+                "      '#loading','.loading','.spinner','.mask','.overlay','.cmg-loading','.ysp-loading','.ysp-spinner','.tv-loading','.live-loading'," +
+                "      '[id*=loading]','[id*=load]','[id*=spinner]','[id*=spin]','[id*=mask]','[id*=overlay]'," +
+                "      '[class*=progress]','[id*=progress]','.progress-bar','.buffer','[class*=buffer]'];" +
                 "    for(var hi=0;hi<hideSels.length;hi++){try{var hn=document.querySelector(hideSels[hi]);if(hn){try{console.log('[CCTV6_HIDE] sel='+hideSels[hi]+' tag='+hn.tagName+' class='+(hn.className||''));}catch(e){}hn.style.setProperty('display','none','important');hn.style.setProperty('visibility','hidden','important');hn.style.setProperty('opacity','0','important');hn.style.setProperty('z-index','-1','important');}}catch(err){}}" +
+                // 额外:遍历所有DOM节点,innerText包含「加载中」/「loading」的节点 → display:none(根治CCTV3/8「全力加载中」文字还在显示的问题)
+                "    try{var allNodes=document.querySelectorAll('*');for(var ni=0;ni<allNodes.length && ni<8000;ni++){var nn=allNodes[ni];if(nn.children && nn.children.length>0)continue;var txt=(nn.innerText||nn.textContent||'').trim();if((txt.length>0 && txt.length<40) && (txt.indexOf('加载中')>=0 || txt.indexOf('Loading')>=0 || txt.indexOf('LOADING')>=0 || txt.indexOf('全力加载')>=0 || txt.indexOf('缓冲')>=0 || txt.indexOf('正在')>=0)){try{console.log('[CCTV6_HIDE_TEXT] txt=\"'+txt+'\" class='+(nn.className||'')+' id='+(nn.id||''));}catch(e){}nn.style.setProperty('display','none','important');nn.style.setProperty('visibility','hidden','important');}}}catch(bigErr){}" +
                 // Step 2: detach VIDEO父级容器DIV(绝对不要detach<video>元素本身)
                 // sel顺序:.video-js(video.js包装层,离video最近)→.video-con→[id^=vodbox]→旧版tv-main-con-*链
                 "    var sel=['.video-js','.video-con','[id^=vodbox]','.tv-main-con-l-vid','.tv-main-con-l','.tv-main-con','.tv-main','.tv','.tv-home'];" +
@@ -1624,17 +1648,23 @@ public final class MainActivity extends Activity {
 
             // ============== 2. 创建 DataSource.Factory,带和 WebView 完全一致的请求头(解决防盗链) ==============
             // 【关键:为什么CCTV-6能播,CCTV-3/8绿屏?】
-            //   WebView 请求 m3u8: 自动带 Referer: yangshipin.cn + User-Agent:Chrome126 + Cookie
-            //   ExoPlayer 默认请求 m3u8: User-Agent="ExoPlayerLib/2.19.x",没有 Referer → 央视频服务器识别
+            //   WebView 请求 m3u8: 自动带 Referer: yangshipin.cn + User-Agent:Chrome126 + Origin:yangshipin.cn + Cookie
+            //   ExoPlayer 默认请求 m3u8: User-Agent="ExoPlayerLib/2.19.x",无Referer无Origin → 央视频服务器识别
             //   为非官方浏览器请求,直接返回「测试绿屏流」(CCTV-6可能服务器限制不严,所以能正常流)
-            // → 所以必须在 ExoPlayer 的 HTTP 请求上把 User-Agent/Referer 补成和 WebView 一样!
+            // → 必须在 ExoPlayer 的 HTTP 请求上把 User-Agent/Referer/Origin 全部补成和桌面 Chrome 一模一样!
             String desktopUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
+            java.util.Map<String, String> exoHeaders = new java.util.HashMap<>();
+            exoHeaders.put("Referer", "https://www.yangshipin.cn/");
+            exoHeaders.put("Origin",  "https://www.yangshipin.cn");   // ← 新增:Origin头(Chrome必带,央视频服务器检查Origin防盗链)
+            exoHeaders.put("Accept", "*/*");                            // ← 新增:Chrome请求m3u8的Accept头
+            exoHeaders.put("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8");
             com.google.android.exoplayer2.upstream.DefaultHttpDataSource.Factory httpDsFactory =
                     new com.google.android.exoplayer2.upstream.DefaultHttpDataSource.Factory()
                             .setUserAgent(desktopUA)
-                            .setDefaultRequestProperties(java.util.Collections.singletonMap("Referer", "https://www.yangshipin.cn/"));
+                            .setDefaultRequestProperties(exoHeaders);
             com.google.android.exoplayer2.source.hls.HlsMediaSource.Factory hlsFactory =
-                    new com.google.android.exoplayer2.source.hls.HlsMediaSource.Factory(httpDsFactory);
+                    new com.google.android.exoplayer2.source.hls.HlsMediaSource.Factory(httpDsFactory)
+                            .setAllowChunklessPreparation(true);  // ← 新增:允许无chunk准备,减少CCTV3/8 _web.m3u8的解析失败率
 
             // 3. 创建 ExoPlayer (Google 官方播放器,minSdk=23,兼容所有旧盒子),绑定监听器
             exoPlayer = new ExoPlayer.Builder(this).build();
