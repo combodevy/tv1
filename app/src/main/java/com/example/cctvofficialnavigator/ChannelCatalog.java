@@ -7,12 +7,18 @@ import java.util.List;
 final class ChannelCatalog {
     static final List<Channel> CHANNELS = Arrays.asList(
             new Channel("CCTV-1 综合",              "https://tv.cctv.com/live/cctv1/"),
+            // CCTV-1 备用（央视频）: pid=600001859 请求 _web.m3u8 (CMG WASM加密流),
+            //   代码会自动检测到 _web.m3u8,不切ExoPlayer,留在WebView里用CMG播放器+WebGL渲染播放
+            //   （已修复:之前错误把 _web.m3u8 送进ExoPlayer导致绿屏/花屏但有声音）
+            new Channel("CCTV-1 综合（备用）",       "https://www.yangshipin.cn/tv/home?pid=600001859"),
             new Channel("CCTV-2 财经",              "https://tv.cctv.com/live/cctv2/"),
             // CCTV-6 在 tv.cctv.com 走 HLSP2P+DRM,Android WebView 黑屏有声音。
             // 改用央视频桌面端独立直播页:yangshipin.cn/tv/home?pid=600108442
             // 桌面UA加载后走标准HLS.js,请求_fhd.m3u8(标准HLS流,无加密),
             // 被 shouldInterceptRequest 拦截后切 ExoPlayer 原生播放(彻底根治有声音没画面)。
-            // 注意:CCTV-3/8 的 yangshipin 页面用 CMG WASM 播放器(_web.m3u8加密流),ExoPlayer解不了,已移除。
+            // 注意:央视频页面分两种流:
+            //   _fhd.m3u8 → 标准HLS清流,无加密,ExoPlayer可播(CCTV-6属于这一类)
+            //   _web.m3u8 → CMG WASM加密流,需WASM解密+WebGL渲染,留在WebView播放(CCTV-1备用/CCTV-3/8属于这一类)
             new Channel("CCTV-4 中文国际（亚）",     "https://tv.cctv.com/live/cctv4/"),
             new Channel("CCTV-4 中文国际（欧）",     "https://tv.cctv.com/live/cctveurope/index.shtml"),
             new Channel("CCTV-4 中文国际（美）",     "https://tv.cctv.com/live/cctvamerica/"),

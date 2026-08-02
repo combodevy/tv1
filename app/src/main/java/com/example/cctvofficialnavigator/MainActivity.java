@@ -329,14 +329,21 @@ public final class MainActivity extends Activity {
                         capturedM3u8Url = url;
                         Log.i("CCTV-TV", "拦截到 m3u8: " + url);
                     }
+                    // ===================== 关键判断:区分 _fhd.m3u8(清流) vs _web.m3u8(CMG加密流) =====================
+                    // _fhd.m3u8 → 标准HLS清流,无加密,ExoPlayer能播(CCTV-6用的就是这个)
+                    // _web.m3u8 → CMG WASM加密流,必须用页面里的WebAssembly解密+软解,ExoPlayer解不了→绿屏/花屏
+                    boolean isEncryptedWebM3u8 = url.contains("_web.m3u8");
+                    boolean isCleanFhdM3u8 = url.contains("_fhd.m3u8") || !isEncryptedWebM3u8;
                     // ===================== 关键Debug:把m3u8拦截结果显式打到右上角调试面板 =====================
-                    final boolean willCallExo = currentIsYangshipin && !exoPlayerActive;
-                    final String shortUrl = url.length() > 80 ? url.substring(0, 70) + "..." : url;
-                    handler.post(() -> updateDebugPanel("M3U8_" + (willCallExo ? "OK_EXO" : "SKIP"),
-                            (willCallExo ? "将切ExoPlayer:" : "不切ExoPlayer:") + shortUrl));
-                    // ================= yangshipin 桌面端(CCTV-1备用/CCTV-6):截到 m3u8 → 切 ExoPlayer 原生播放 ===============
-                    // 和 CCTV-6 完全一样的逻辑:shouldInterceptRequest 截到 m3u8 → playYangshipinWithExoPlayer
-                    if (currentIsYangshipin && !exoPlayerActive) {
+                    final boolean willCallExo = currentIsYangshipin && !exoPlayerActive && !isEncryptedWebM3u8;
+                    final String streamType = isEncryptedWebM3u8 ? "CMG加密流(WebView自播)" : (isCleanFhdM3u8 ? "HLS清流(切Exo)" : "未知");
+                    final String shortUrl = url.length() > 70 ? url.substring(0, 60) + "..." : url;
+                    handler.post(() -> updateDebugPanel("M3U8_" + (willCallExo ? "OK_EXO" : "SKIP") + "_" + streamType.substring(0, 6),
+                            (willCallExo ? "将切ExoPlayer:" : "不切ExoPlayer[") + streamType + "]:" + shortUrl));
+                    // ================= yangshipin 桌面端:只有清流(_fhd等非_web)才切ExoPlayer =================
+                    // _web.m3u8(CMG WASM加密流):不切ExoPlayer,让WebView里的CMG播放器用WebGL+WASM自己播
+                    // (现在已经统一LAYER_TYPE_HARDWARE,WebGL可用;CCTV-1备用/CCTV-3/CCTV-8属于这一类)
+                    if (currentIsYangshipin && !exoPlayerActive && !isEncryptedWebM3u8) {
                         final String finalM3u8Url = url;
                         handler.post(() -> {
                             try { webView.setLayerType(View.LAYER_TYPE_HARDWARE, null); } catch (Throwable t) {}
