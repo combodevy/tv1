@@ -7,7 +7,6 @@ import java.util.List;
 final class ChannelCatalog {
     static final List<Channel> CHANNELS = Arrays.asList(
             new Channel("CCTV-1 综合",              "https://tv.cctv.com/live/cctv1/"),
-            new Channel("CCTV-1 综合（备用）",       "https://www.yangshipin.cn/tv/home?pid=600001859"),
             new Channel("CCTV-2 财经",              "https://tv.cctv.com/live/cctv2/"),
             // CCTV-6 在 tv.cctv.com 走 HLSP2P+DRM,Android WebView 黑屏有声音。
             // 改用央视频桌面端独立直播页:yangshipin.cn/tv/home?pid=600108442
