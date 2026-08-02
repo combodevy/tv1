@@ -648,6 +648,8 @@ public final class MainActivity extends Activity {
                 "    '#J_prismPlayer,#prismPlayer,#live_prismPlayer,.prism-player{width:100vw!important;height:100vh!important;margin:0!important;padding:0!important;position:absolute!important;left:0!important;top:0!important;background:#000!important;border:0!important}'+" +
                 // 广西台播放器外壳(liangtv/频道详情页常见的 wrapper id)
                 "    '#play-box,#videoBox,#playBox,.player-wrap,.live-wrap{width:100vw!important;height:100vh!important;margin:0!important;padding:0!important;position:absolute!important;left:0!important;top:0!important;background:#000!important}'+" +
+                // 央视频桌面端(yangshipin)新版播放器DOM(实机日志确认):.container>.y-full>.y-full-control>.play.play2 .videoFull .full.full2. 用#app前缀限制范围,其他台无#app不会误中
+                "    '#app .container,#app .y-full,#app .y-full-control,#app .y-full-control-btn{width:100vw!important;height:100vh!important;margin:0!important;padding:0!important;position:absolute!important;left:0!important;top:0!important;background:#000!important;border:0!important}'+" +
                 // 央视频桌面端(yangshipin.cn/tv/home)真实容器链(2026-08-01实机确认):
                 //   根: .tv-home / .tv / .tv-main / .tv-main-con
                 //   左侧播放器区: .tv-main-con-l → .tv-main-con-l-vid → #vodbox<pid>.c-container.img → .video-con
@@ -729,7 +731,7 @@ public final class MainActivity extends Activity {
                 // 模拟用户鼠标点击大播放按钮 + video 本身(绕过自动播放策略):只对 yangshipin 执行,且只执行 1 次
                 "  function _ysh_fakeClickPlay(){" +
                 "    if(!_ysh_is())return;if(window.__yshClick)return;window.__yshClick=1;" +
-                "    var btns=document.querySelectorAll('.vjs-big-play-button,.cmg-play-btn,.btn-play,.play-btn,[class*=big][class*=play],[class*=vjs][class*=play]');" +
+                "    var btns=document.querySelectorAll('.vjs-big-play-button,.cmg-play-btn,.btn-play,.play-btn,[class*=big][class*=play],[class*=vjs][class*=play],.play.play2,.videoFull,.full.full2,.play');" +
                 "    for(var i=0;i<btns.length;i++){try{btns[i].dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window}));}catch(e){try{btns[i].click();}catch(e2){}}}" +
                 "    var vs=document.querySelectorAll('video[id^=myvideo],video');" +
                 "    for(var j=0;j<vs.length;j++){try{vs[j].muted=true;vs[j].play();}catch(e){}try{vs[j].dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window}));}catch(e){}}" +
@@ -769,7 +771,7 @@ public final class MainActivity extends Activity {
                 "  }" +
                 "  function _ysh_fakeClickPlay(){" +
                 "    if(!_ysh_is())return;if(window.__yshClick)return;window.__yshClick=1;" +
-                "    var btns=document.querySelectorAll('.vjs-big-play-button,.cmg-play-btn,.btn-play,.play-btn,[class*=big][class*=play],[class*=vjs][class*=play]');" +
+                "    var btns=document.querySelectorAll('.vjs-big-play-button,.cmg-play-btn,.btn-play,.play-btn,[class*=big][class*=play],[class*=vjs][class*=play],.play.play2,.videoFull,.full.full2,.play');" +
                 "    for(var i=0;i<btns.length;i++){try{btns[i].dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window}));}catch(e){try{btns[i].click();}catch(e2){}}}" +
                 "    var vs=document.querySelectorAll('video[id^=myvideo],video');" +
                 "    for(var j=0;j<vs.length;j++){try{vs[j].muted=true;vs[j].play();}catch(e){}try{vs[j].dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window}));}catch(e){}}" +
