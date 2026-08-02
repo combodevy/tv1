@@ -329,25 +329,28 @@ public final class MainActivity extends Activity {
                         capturedM3u8Url = url;
                         Log.i("CCTV-TV", "拦截到 m3u8: " + url);
                     }
-                    // ===================== 关键判断:区分 _fhd.m3u8(清流) vs _web.m3u8(CMG加密流) =====================
-                    // _fhd.m3u8 → 标准HLS清流,无加密,ExoPlayer能播(CCTV-6用的就是这个)
-                    // _web.m3u8 → CMG WASM加密流,必须用页面里的WebAssembly解密+软解,ExoPlayer解不了→绿屏/花屏
+                    // ===================== 关键判断:哪些m3u8可以送ExoPlayer,哪些不行 =====================
+                    // 实测结论(2026-08):
+                    //   1) _web.m3u8 → 央视频encrypt=2,CMG WASM加密流:
+                    //      需要WebAssembly解密+软解,Android上无论ExoPlayer还是WebView都播不了视频(只有声音)
+                    //      → 必须跳过,不能切ExoPlayer
+                    //   2) cdrm*.m3u8 / ld*.m3u8 / _fhd.m3u8 / 其他所有m3u8 → 标准HLS清流:
+                    //      所谓"cdrm"只是JS播放器层面的DRM能力检测,TS分片实际无EXT-X-KEY加密,
+                    //      是标准H.264+AAC,ExoPlayer可直接原生播放!
+                    //      → 全部切ExoPlayer原生播放(比WebView里的hls.js兜底更流畅、更省电、兼容性更好)
                     boolean isEncryptedWebM3u8 = url.contains("_web.m3u8");
-                    boolean isCleanFhdM3u8 = url.contains("_fhd.m3u8") || !isEncryptedWebM3u8;
                     // ===================== 关键Debug:把m3u8拦截结果显式打到右上角调试面板 =====================
-                    final boolean willCallExo = currentIsYangshipin && !exoPlayerActive && !isEncryptedWebM3u8;
-                    final String streamType = isEncryptedWebM3u8 ? "CMG加密流(WebView自播)" : (isCleanFhdM3u8 ? "HLS清流(切Exo)" : "未知");
+                    final boolean willCallExo = !exoPlayerActive && !isEncryptedWebM3u8;
+                    final String streamType = isEncryptedWebM3u8 ? "CMG加密(跳过)" : "标准HLS(切Exo)";
                     final String shortUrl = url.length() > 70 ? url.substring(0, 60) + "..." : url;
-                    handler.post(() -> updateDebugPanel("M3U8_" + (willCallExo ? "OK_EXO" : "SKIP") + "_" + streamType.substring(0, 6),
+                    handler.post(() -> updateDebugPanel("M3U8_" + (willCallExo ? "EXO" : "SKIP") + "_" + (isEncryptedWebM3u8 ? "ENCRYPT" : "CLEAN"),
                             (willCallExo ? "将切ExoPlayer:" : "不切ExoPlayer[") + streamType + "]:" + shortUrl));
-                    // ================= yangshipin 桌面端:只有清流(_fhd等非_web)才切ExoPlayer =================
-                    // _web.m3u8(CMG WASM加密流):不切ExoPlayer,让WebView里的CMG播放器用WebGL+WASM自己播
-                    // (现在已经统一LAYER_TYPE_HARDWARE,WebGL可用;CCTV-1备用/CCTV-3/CCTV-8属于这一类)
-                    if (currentIsYangshipin && !exoPlayerActive && !isEncryptedWebM3u8) {
+                    // ================= 所有标准HLS清流(央视cdrm/ld + 央视频_fhd + 广西台等)一律切ExoPlayer =================
+                    if (willCallExo) {
                         final String finalM3u8Url = url;
                         handler.post(() -> {
                             try { webView.setLayerType(View.LAYER_TYPE_HARDWARE, null); } catch (Throwable t) {}
-                            playYangshipinWithExoPlayer(finalM3u8Url);
+                            playWithExoPlayer(finalM3u8Url);
                         });
                     }
                 }
@@ -1378,6 +1381,8 @@ public final class MainActivity extends Activity {
 
     private void doWhiteScreenCheck(int gen, long elapsedMs) {
         if (gen != loadGeneration) return;
+        // ExoPlayer已在原生播放时,不需要白屏检测(WebView已隐藏,JS检测无意义)
+        if (exoPlayerActive) return;
         // 即使 evaluateJavascript 回调永远不触发(如 JS 死循环或 WebView 挂),也先在屏幕上打"诊断中"
         updateDebugPanel("诊断中 已等" + (elapsedMs / 1000) + "秒", null);
         // 兜底:2 秒后如果 JS 回调还没触发,强制显示"JS 卡住了"(让用户知道不是白屏而是 evaluateJavascript 无响应)
@@ -1485,7 +1490,7 @@ public final class MainActivity extends Activity {
                         .replace("|", "\n");
                 updateDebugPanel("NO_VIDEO", detail);
                 // 如果 10 秒后还是没有 video 元素,且已拦截到 m3u8,用 hls.js 兜底播放
-                if (elapsedMs >= 10000 && capturedM3u8Url != null && !hlsPlayerInjected) {
+                if (elapsedMs >= 10000 && capturedM3u8Url != null && !hlsPlayerInjected && !exoPlayerActive) {
                     hlsPlayerInjected = true;
                     updateDebugPanel("HLS_FALLBACK", "无video元素,切换hls.js直连\nm3u8=" + shortenUrl(capturedM3u8Url));
                     injectHlsPlayer(capturedM3u8Url);
@@ -1494,7 +1499,7 @@ public final class MainActivity extends Activity {
                 // 有声音无画面:HLSP2P 的 P2P 视频失败,音频正常
                 Log.w("CCTV-TV", "=== 有声音无画面(" + elapsedMs + "ms) ===\n" + state);
                 updateDebugPanel("BLACK_SCREEN", "有声音无画面:HLSP2P的P2P视频失败\n正在切换hls.js兜底...");
-                if (elapsedMs >= 10000 && capturedM3u8Url != null && !hlsPlayerInjected) {
+                if (elapsedMs >= 10000 && capturedM3u8Url != null && !hlsPlayerInjected && !exoPlayerActive) {
                     hlsPlayerInjected = true;
                     updateDebugPanel("HLS_FALLBACK", "有声音无画面,切换hls.js直连\nm3u8=" + shortenUrl(capturedM3u8Url));
                     injectHlsPlayer(capturedM3u8Url);
@@ -1530,8 +1535,8 @@ public final class MainActivity extends Activity {
                         "})()",
                         null);
                 // 如果 10 秒后视频还是暂停的,说明 HLSP2P 播放器在 WebView 上跑不起来,
-                // 用 hls.js 兜底直接播放 m3u8
-                if (elapsedMs >= 10000 && capturedM3u8Url != null && !hlsPlayerInjected) {
+                // 用 hls.js 兜底直接播放 m3u8(ExoPlayer已激活时不需要)
+                if (elapsedMs >= 10000 && capturedM3u8Url != null && !hlsPlayerInjected && !exoPlayerActive) {
                     hlsPlayerInjected = true;
                     updateDebugPanel("HLS_FALLBACK", "HLSP2P播放失败,切换hls.js直连\nm3u8=" + shortenUrl(capturedM3u8Url));
                     injectHlsPlayer(capturedM3u8Url);
@@ -1630,49 +1635,56 @@ public final class MainActivity extends Activity {
      *  → 在任何 Android TV/盒子上 100% 能出画面
      */
     @SuppressLint("SetTextI18n")
-    private void playYangshipinWithExoPlayer(String m3u8Url) {
+    private void playWithExoPlayer(String m3u8Url) {
         if (m3u8Url == null || m3u8Url.isEmpty()) return;
-        if (exoPlayerActive || exoPlayer != null) return;  // 避免重复创建播放器
-        if (currentIsYangshipin == false) return;  // 非 yangshipin 频道不切
+        if (exoPlayerActive || exoPlayer != null) return;
         if (rootContainer == null) {
             Log.e("CCTV-TV", "[EXOPLAYER_ERR] rootContainer 为空,无法创建 PlayerView");
             return;
         }
         try {
-            // ============================== 注意:此方法只处理 _fhd.m3u8 (CCTV6 标准HLS流) ==============================
-            // _web.m3u8 (CCTV3/8 CMG WASM 特制流) 在 shouldInterceptRequest 里已经拦截,不会进到这里。
-            // 所以这里 m3u8Url 一定是 _fhd.m3u8,不需要做任何后缀替换。
             final String playUrl = m3u8Url;
-            // 1. 隐藏 WebView(黑屏的来源) + 暂停 WebView 渲染(省电)
             webView.onPause();
             webView.setVisibility(View.GONE);
-            Log.i("CCTV-TV", "[EXOPLAYER_START] CCTV-6 切 ExoPlayer 原生播放, m3u8=" + playUrl);
+            Log.i("CCTV-TV", "[EXOPLAYER_START] 切 ExoPlayer 原生播放, m3u8=" + playUrl);
             updateDebugPanel("EXOPLAYER_START", "切原生播放:" + shortenUrl(playUrl));
 
-            // ============== 2. 创建 DataSource.Factory,带和 WebView 完全一致的请求头(解决防盗链) ==============
-            // 【关键:为什么CCTV-6能播,CCTV-3/8绿屏?】
-            //   WebView 请求 m3u8: 自动带 Referer: yangshipin.cn + User-Agent:Chrome126 + Origin:yangshipin.cn + Cookie
-            //   ExoPlayer 默认请求 m3u8: User-Agent="ExoPlayerLib/2.19.x",无Referer无Origin → 央视频服务器识别
-            //   为非官方浏览器请求,直接返回「测试绿屏流」(CCTV-6可能服务器限制不严,所以能正常流)
-            // → 必须在 ExoPlayer 的 HTTP 请求上把 User-Agent/Referer/Origin 全部补成和桌面 Chrome 一模一样!
-            String desktopUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
+            // ★★★ 根据频道类型动态设置UA/Referer/Origin ★★★
+            String ua, referer, origin;
+            if (currentIsYangshipin) {
+                // 央视频桌面端:用桌面Chrome UA
+                ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
+                referer = "https://www.yangshipin.cn/";
+                origin  = "https://www.yangshipin.cn";
+            } else {
+                // 央视主源/广西台等:用移动Chrome UA,Referer用当前频道的官方URL
+                ua = "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36";
+                String ref = expectedOfficialUrl != null ? expectedOfficialUrl : "https://tv.cctv.com/";
+                referer = ref;
+                try {
+                    java.net.URI uri = new java.net.URI(ref);
+                    origin = uri.getScheme() + "://" + uri.getHost();
+                } catch (Exception e) {
+                    origin = "https://tv.cctv.com";
+                }
+            }
             java.util.Map<String, String> exoHeaders = new java.util.HashMap<>();
-            exoHeaders.put("Referer", "https://www.yangshipin.cn/");
-            exoHeaders.put("Origin",  "https://www.yangshipin.cn");   // ← 新增:Origin头(Chrome必带,央视频服务器检查Origin防盗链)
-            exoHeaders.put("Accept", "*/*");                            // ← 新增:Chrome请求m3u8的Accept头
+            exoHeaders.put("Referer", referer);
+            exoHeaders.put("Origin",  origin);
+            exoHeaders.put("Accept", "*/*");
             exoHeaders.put("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8");
+            Log.i("CCTV-TV", "[EXOPLAYER_HEADERS] UA=" + ua.substring(0, 30) + " Referer=" + referer + " Origin=" + origin);
+
             com.google.android.exoplayer2.upstream.DefaultHttpDataSource.Factory httpDsFactory =
                     new com.google.android.exoplayer2.upstream.DefaultHttpDataSource.Factory()
-                            .setUserAgent(desktopUA)
+                            .setUserAgent(ua)
                             .setDefaultRequestProperties(exoHeaders);
             com.google.android.exoplayer2.source.hls.HlsMediaSource.Factory hlsFactory =
                     new com.google.android.exoplayer2.source.hls.HlsMediaSource.Factory(httpDsFactory)
-                            .setAllowChunklessPreparation(true);  // ← 新增:允许无chunk准备,减少CCTV3/8 _web.m3u8的解析失败率
+                            .setAllowChunklessPreparation(true);
 
-            // 3. 创建 ExoPlayer (Google 官方播放器,minSdk=23,兼容所有旧盒子),绑定监听器
             exoPlayer = new ExoPlayer.Builder(this).build();
             exoPlayer.setVolume(1.0f);
-            // ===== ExoPlayer.Listener:把所有状态打到右上角调试面板,用户一看就知道问题在哪 =====
             exoPlayer.addListener(new com.google.android.exoplayer2.Player.Listener() {
                 String stateName(int state) {
                     switch (state) {
@@ -1689,7 +1701,7 @@ public final class MainActivity extends Activity {
                     updateDebugPanel("EXO_STATE", s);
                 }
                 @Override public void onVideoSizeChanged(com.google.android.exoplayer2.video.VideoSize videoSize) {
-                    String sz = "VID_SIZE " + videoSize.width + "x" + videoSize.height + " sarNum=" + videoSize.pixelWidthHeightRatio;
+                    String sz = "VID_SIZE " + videoSize.width + "x" + videoSize.height;
                     Log.i("CCTV-TV", "[EXOPLAYER_VID_SIZE] " + sz);
                     updateDebugPanel("EXO_VID", sz);
                 }
@@ -1700,38 +1712,28 @@ public final class MainActivity extends Activity {
                 }
             });
 
-            // 4. ★★★ 直接 new TextureView,不用 PlayerView 的 setSurfaceType(某些ExoPlayer版本无此API导致编译错) ★★★
-            //    SurfaceView 是独立叠加层,在模拟器+某些盒子上会出现:
-            //    YUV color range 错 → 绿屏; or 和 WebView GONE 后的空 Surface 合成错 → 绿屏
-            //    TextureView 走 View 合成路径,和其他 View 一样画到同一个 Canvas,100% 兼容所有设备
             android.view.TextureView textureView = new android.view.TextureView(this);
-            textureView.setKeepScreenOn(true);  // 保持屏幕常亮,直播不黑屏
+            textureView.setKeepScreenOn(true);
             FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
                     FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT);
             textureView.setLayoutParams(lp);
-            // 把 TextureView 绑定到 ExoPlayer → 视频像素直接画到 TextureView
             exoPlayer.setVideoTextureView(textureView);
-            // 放到 rootContainer 的最上层(z-index 最高,调试面板用 elevation 保持在最顶层)
             rootContainer.addView(textureView, Math.max(0, rootContainer.getChildCount() - 2));
             textureView.requestLayout();
             textureView.invalidate();
-            // textureView 保存到 exoPlayerView 引用,切台时 releaseExoPlayer 统一 removeView
             exoPlayerView = textureView;
 
-            // 5. 喂给 ExoPlayer 播放(HlsMediaSource + 带 Referer/UA/Origin 的 HTTP 头)
-            //    注意:这里必须用 playUrl(已经把 _web.m3u8 替换成 _fhd.m3u8),不能用原始 m3u8Url,否则CCTV3/8绿屏
             MediaItem mediaItem = MediaItem.fromUri(playUrl);
             com.google.android.exoplayer2.source.MediaSource ms = hlsFactory.createMediaSource(mediaItem);
             exoPlayer.setMediaSource(ms);
             exoPlayer.prepare();
             exoPlayer.setPlayWhenReady(true);
 
-            // 6. 标记已激活
             exoPlayerActive = true;
-            Toast.makeText(this, "已切换到原生播放器(CCTV-3/6/8)", Toast.LENGTH_LONG).show();
+            String channelName = ChannelCatalog.CHANNELS.get(channelIndex).name;
+            Toast.makeText(this, "已切换到原生播放器: " + channelName, Toast.LENGTH_SHORT).show();
         } catch (Throwable t) {
             Log.e("CCTV-TV", "[EXOPLAYER_ERR] 创建 ExoPlayer 失败: " + t.getClass().getName() + ": " + t.getMessage(), t);
-            // 创建失败兜底:恢复 WebView 显示,继续用原来的 WebView <video> 链路(虽然可能黑屏,但至少不崩)
             releaseExoPlayer();
             try { webView.setVisibility(View.VISIBLE); webView.onResume(); } catch (Throwable t2) {}
             updateDebugPanel("EXOPLAYER_ERR", "创建失败:" + t.getMessage());

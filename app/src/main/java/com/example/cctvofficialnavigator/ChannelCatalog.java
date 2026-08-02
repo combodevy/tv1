@@ -7,18 +7,20 @@ import java.util.List;
 final class ChannelCatalog {
     static final List<Channel> CHANNELS = Arrays.asList(
             new Channel("CCTV-1 综合",              "https://tv.cctv.com/live/cctv1/"),
-            // CCTV-1 备用（央视频）: pid=600001859 请求 _web.m3u8 (CMG WASM加密流),
-            //   代码会自动检测到 _web.m3u8,不切ExoPlayer,留在WebView里用CMG播放器+WebGL渲染播放
-            //   （已修复:之前错误把 _web.m3u8 送进ExoPlayer导致绿屏/花屏但有声音）
-            new Channel("CCTV-1 综合（备用）",       "https://www.yangshipin.cn/tv/home?pid=600001859"),
+            // ===== CCTV-1 备用源说明 =====
+            // 央视频桌面端(yangshipin.cn/tv/home?pid=xxx)实测结果(2026-08):
+            //   只有CCTV-6(pid=600108442)返回 _fhd.m3u8 清流(encrypt=0),ExoPlayer可正常播放。
+            //   其他所有频道(CCTV-1/CCTV-2/3/4/5/5+/7-15/CGTN)全部返回 _web.m3u8(encrypt=2,CMG WASM加密流),
+            //   这种加密流在Android上无论送给ExoPlayer(绿屏/花屏)还是留在WebView(黑屏)都无法正常播放视频,
+            //   只能解出音频(有声音没画面)。所以CCTV-1备用的yangshipin源暂时不可用,已移除。
+            //   如果以后央视频放开CCTV-1的清流pid,可以参考CCTV-6的方式重新添加。
+            // new Channel("CCTV-1 综合（备用）",    "https://www.yangshipin.cn/tv/home?pid=600001859"),  // 不可用:encrypt=2加密流
             new Channel("CCTV-2 财经",              "https://tv.cctv.com/live/cctv2/"),
             // CCTV-6 在 tv.cctv.com 走 HLSP2P+DRM,Android WebView 黑屏有声音。
             // 改用央视频桌面端独立直播页:yangshipin.cn/tv/home?pid=600108442
-            // 桌面UA加载后走标准HLS.js,请求_fhd.m3u8(标准HLS流,无加密),
+            // 桌面UA加载后请求_fhd.m3u8(encrypt=0标准HLS清流,无加密),
             // 被 shouldInterceptRequest 拦截后切 ExoPlayer 原生播放(彻底根治有声音没画面)。
-            // 注意:央视频页面分两种流:
-            //   _fhd.m3u8 → 标准HLS清流,无加密,ExoPlayer可播(CCTV-6属于这一类)
-            //   _web.m3u8 → CMG WASM加密流,需WASM解密+WebGL渲染,留在WebView播放(CCTV-1备用/CCTV-3/8属于这一类)
+            // 注意:这是目前央视频桌面端唯一返回清流的频道!其他频道pid全部返回encrypt=2加密流,不可用。
             new Channel("CCTV-4 中文国际（亚）",     "https://tv.cctv.com/live/cctv4/"),
             new Channel("CCTV-4 中文国际（欧）",     "https://tv.cctv.com/live/cctveurope/index.shtml"),
             new Channel("CCTV-4 中文国际（美）",     "https://tv.cctv.com/live/cctvamerica/"),
