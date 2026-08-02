@@ -736,12 +736,17 @@ public final class MainActivity extends Activity {
                 "    var vs=document.querySelectorAll('video[id^=myvideo],video');" +
                 "    for(var j=0;j<vs.length;j++){try{vs[j].muted=true;vs[j].play();}catch(e){}try{vs[j].dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window}));}catch(e){}}" +
                 "  }" +
-                // yangshipin 专属:把最高优先级的播放器容器detach到body首节点,强制内联样式fixed全屏(绕过CSS !important冲突)
+                // yangshipin 专属:1)先隐藏不含video的垃圾层(#app版权页/.container新版空壳),避免盖住视频
+                //                2)真实VIDEO/vodbox优先detach(绝不先detach新版空壳)
+                //                3)z-index=2147483647(32-bit int最大值,绝对最顶层)
                 // 函数第一行if(!_ysh_is())return → 其他台零执行零影响
                 "  function _ysh_forceVisibleDetach(){" +
                 "    if(!_ysh_is())return;" +
-                // 优先级顺序(命中哪个就detach哪个):新版.container/.y-full → 旧版vodbox/.video-con → video.js容器 → tv-home链
-                "    var sel=['.container','.y-full','[id^=vodbox]','.video-con','.video-js','.tv-main-con-l','.tv-main-con-l-vid','.tv-main-con','.tv-main','.tv','.tv-home','#app'];" +
+                // Step 1: 先把不含真实video的垃圾层(#app首页DOM+新版.container/.y-full等空壳) display:none → 避免层叠顺序盖在视频上
+                "    var hideSels=['#app','.container[data-v-03d5f916]','.container','.y-full','.y-full-bg','.y-full-control','.y-full-control-btn','.volume-muted-tip-container','.video-status-tip'];" +
+                "    for(var hi=0;hi<hideSels.length;hi++){try{var hn=document.querySelector(hideSels[hi]);if(hn){hn.style.setProperty('display','none','important');hn.style.setProperty('visibility','hidden','important');hn.style.setProperty('opacity','0','important');hn.style.setProperty('z-index','-1','important');}}catch(err){}}" +
+                // Step 2: 真实 VIDEO 优先 → 真实video / .video-js(video本身) → .video-con → [id^=vodbox] → tv-main-con-*旧版链. 绝不先detach新版空壳
+                "    var sel=['video[id^=myvideo]','.video-js','.video-con','[id^=vodbox]','.tv-main-con-l-vid','.tv-main-con-l','.tv-main-con','.tv-main','.tv','.tv-home'];" +
                 "    var el=null;for(var si=0;si<sel.length;si++){try{var e=document.querySelector(sel[si]);if(e){el=e;break;}}catch(err){}}" +
                 "    if(el){" +
                 "      if(el.parentNode!==document.body){try{el.parentNode.removeChild(el);document.body.insertBefore(el,document.body.firstChild);}catch(err){}}" +
@@ -750,13 +755,13 @@ public final class MainActivity extends Activity {
                 "        el.style.setProperty('width','100vw','important');el.style.setProperty('height','100vh','important');" +
                 "        el.style.setProperty('min-width','100vw','important');el.style.setProperty('min-height','100vh','important');" +
                 "        el.style.setProperty('max-width','none','important');el.style.setProperty('max-height','none','important');" +
-                "        el.style.setProperty('overflow','visible','important');el.style.setProperty('z-index','999999','important');" +
+                "        el.style.setProperty('overflow','visible','important');el.style.setProperty('z-index','2147483647','important');" + // 最高z-index,绝对最顶层
                 "        el.style.setProperty('background','#000','important');el.style.setProperty('display','block','important');" +
                 "        el.style.setProperty('visibility','visible','important');el.style.setProperty('opacity','1','important');" +
                 "        el.style.setProperty('transform','none','important');el.style.setProperty('margin','0','important');el.style.setProperty('padding','0','important');" +
                 "      }catch(err){}" +
                 "    }" +
-                // 再单独强制 video 元素内联样式(确保视频层的样式(优先级最高,绕过任何外部CSS冲突)
+                // Step 3: 再强制<video>元素本身最高z-index fixed全屏(双保险,绕过任何CSS层级冲突
                 "    var vs2=document.querySelectorAll('video[id^=myvideo],video');" +
                 "    for(var vi=0;vi<vs2.length;vi++){" +
                 "      try{" +
@@ -765,7 +770,7 @@ public final class MainActivity extends Activity {
                 "        vv.style.setProperty('width','100vw','important');vv.style.setProperty('height','100vh','important');" +
                 "        vv.style.setProperty('min-width','100vw','important');vv.style.setProperty('min-height','100vh','important');" +
                 "        vv.style.setProperty('max-width','none','important');vv.style.setProperty('max-height','none','important');" +
-                "        vv.style.setProperty('z-index','999999','important');vv.style.setProperty('object-fit','contain','important');" +
+                "        vv.style.setProperty('z-index','2147483647','important');vv.style.setProperty('object-fit','contain','important');" +
                 "        vv.style.setProperty('background','#000','important');vv.style.setProperty('display','block','important');" +
                 "        vv.style.setProperty('visibility','visible','important');vv.style.setProperty('opacity','1','important');" +
                 "        vv.style.setProperty('transform','none','important');vv.style.setProperty('overflow','visible','important');" +
@@ -812,11 +817,17 @@ public final class MainActivity extends Activity {
                 "    var vs=document.querySelectorAll('video[id^=myvideo],video');" +
                 "    for(var j=0;j<vs.length;j++){try{vs[j].muted=true;vs[j].play();}catch(e){}try{vs[j].dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window}));}catch(e){}}" +
                 "  }" +
-                // yangshipin 专属:把最高优先级的播放器容器detach到body首节点,强制内联样式fixed全屏(绕过CSS !important冲突)
+                // yangshipin 专属:1)先隐藏不含video的垃圾层(#app版权页/.container新版空壳),避免盖住视频
+                //                2)真实VIDEO/vodbox优先detach(绝不先detach新版空壳)
+                //                3)z-index=2147483647(32-bit int最大值,绝对最顶层)
                 // 函数第一行if(!_ysh_is())return → 其他台零执行零影响
                 "  function _ysh_forceVisibleDetach(){" +
                 "    if(!_ysh_is())return;" +
-                "    var sel=['.container','.y-full','[id^=vodbox]','.video-con','.video-js','.tv-main-con-l','.tv-main-con-l-vid','.tv-main-con','.tv-main','.tv','.tv-home','#app'];" +
+                // Step 1: 先把不含真实video的垃圾层(#app首页DOM+新版.container/.y-full等空壳) display:none → 避免层叠顺序盖在视频上
+                "    var hideSels=['#app','.container[data-v-03d5f916]','.container','.y-full','.y-full-bg','.y-full-control','.y-full-control-btn','.volume-muted-tip-container','.video-status-tip'];" +
+                "    for(var hi=0;hi<hideSels.length;hi++){try{var hn=document.querySelector(hideSels[hi]);if(hn){hn.style.setProperty('display','none','important');hn.style.setProperty('visibility','hidden','important');hn.style.setProperty('opacity','0','important');hn.style.setProperty('z-index','-1','important');}}catch(err){}}" +
+                // Step 2: 真实 VIDEO 优先 → 真实video / .video-js(video本身) → .video-con → [id^=vodbox] → tv-main-con-*旧版链. 绝不先detach新版空壳
+                "    var sel=['video[id^=myvideo]','.video-js','.video-con','[id^=vodbox]','.tv-main-con-l-vid','.tv-main-con-l','.tv-main-con','.tv-main','.tv','.tv-home'];" +
                 "    var el=null;for(var si=0;si<sel.length;si++){try{var e=document.querySelector(sel[si]);if(e){el=e;break;}}catch(err){}}" +
                 "    if(el){" +
                 "      if(el.parentNode!==document.body){try{el.parentNode.removeChild(el);document.body.insertBefore(el,document.body.firstChild);}catch(err){}}" +
@@ -825,12 +836,13 @@ public final class MainActivity extends Activity {
                 "        el.style.setProperty('width','100vw','important');el.style.setProperty('height','100vh','important');" +
                 "        el.style.setProperty('min-width','100vw','important');el.style.setProperty('min-height','100vh','important');" +
                 "        el.style.setProperty('max-width','none','important');el.style.setProperty('max-height','none','important');" +
-                "        el.style.setProperty('overflow','visible','important');el.style.setProperty('z-index','999999','important');" +
+                "        el.style.setProperty('overflow','visible','important');el.style.setProperty('z-index','2147483647','important');" + // 最高z-index,绝对最顶层
                 "        el.style.setProperty('background','#000','important');el.style.setProperty('display','block','important');" +
                 "        el.style.setProperty('visibility','visible','important');el.style.setProperty('opacity','1','important');" +
                 "        el.style.setProperty('transform','none','important');el.style.setProperty('margin','0','important');el.style.setProperty('padding','0','important');" +
                 "      }catch(err){}" +
                 "    }" +
+                // Step 3: 再强制<video>元素本身最高z-index fixed全屏(双保险,绕过任何CSS层级冲突)
                 "    var vs2=document.querySelectorAll('video[id^=myvideo],video');" +
                 "    for(var vi=0;vi<vs2.length;vi++){" +
                 "      try{" +
@@ -839,7 +851,7 @@ public final class MainActivity extends Activity {
                 "        vv.style.setProperty('width','100vw','important');vv.style.setProperty('height','100vh','important');" +
                 "        vv.style.setProperty('min-width','100vw','important');vv.style.setProperty('min-height','100vh','important');" +
                 "        vv.style.setProperty('max-width','none','important');vv.style.setProperty('max-height','none','important');" +
-                "        vv.style.setProperty('z-index','999999','important');vv.style.setProperty('object-fit','contain','important');" +
+                "        vv.style.setProperty('z-index','2147483647','important');vv.style.setProperty('object-fit','contain','important');" +
                 "        vv.style.setProperty('background','#000','important');vv.style.setProperty('display','block','important');" +
                 "        vv.style.setProperty('visibility','visible','important');vv.style.setProperty('opacity','1','important');" +
                 "        vv.style.setProperty('transform','none','important');vv.style.setProperty('overflow','visible','important');" +
