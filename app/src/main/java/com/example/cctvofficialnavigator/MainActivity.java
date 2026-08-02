@@ -330,34 +330,17 @@ public final class MainActivity extends Activity {
                         Log.i("CCTV-TV", "拦截到 m3u8: " + url);
                     }
                     // ===================== 关键Debug:把m3u8拦截结果显式打到右上角调试面板 =====================
-                    //  用户现在一看右上角就知道:有没有截到m3u8?有没有调用ExoPlayer?瞬间定位问题!
                     final boolean willCallExo = currentIsYangshipin && !exoPlayerActive;
                     final String shortUrl = url.length() > 80 ? url.substring(0, 70) + "..." : url;
                     handler.post(() -> updateDebugPanel("M3U8_" + (willCallExo ? "OK_EXO" : "SKIP"),
                             (willCallExo ? "将切ExoPlayer:" : "不切ExoPlayer:") + shortUrl));
-                    // ================= CCTV-3/6/8 yangshipin 桌面端:截到 m3u8 的处理 ===============
-                    // 【关键:CCTV6 vs CCTV3/8 的流完全不同!】
-                    //   CCTV6 用标准 HLS.js → 请求 _fhd.m3u8 (标准HLS流)
-                    //     → 切 ExoPlayer 原生播放 + LAYER_TYPE_HARDWARE → ✅正常
-                    //   CCTV3/8 用 CMG WASM 播放器(基于HLS.js+WebAssembly解密)
-                    //     → 请求 _web.m3u8 (CMG加密流) → WASM解密后通过MSE(blob:)喂给<video>元素
-                    //     → ExoPlayer 解不了加密流 → 不能用ExoPlayer
-                    //     → 必须用WebView的<video>元素播放
-                    //     → <video>元素在WebView里通过SurfaceView渲染,有overlay位置bug → 黑屏有声音
-                    //     → 解决:动态切LAYER_TYPE_SOFTWARE,让<video>用软件渲染(不走SurfaceView overlay)
-                    if (currentIsYangshipin && !exoPlayerActive && url.contains("_fhd.m3u8")) {
-                        // CCTV6:标准HLS流 → 切 ExoPlayer + HARDWARE
+                    // ================= yangshipin 桌面端(CCTV-1备用/CCTV-6):截到 m3u8 → 切 ExoPlayer 原生播放 ===============
+                    // 和 CCTV-6 完全一样的逻辑:shouldInterceptRequest 截到 m3u8 → playYangshipinWithExoPlayer
+                    if (currentIsYangshipin && !exoPlayerActive) {
+                        final String finalM3u8Url = url;
                         handler.post(() -> {
                             try { webView.setLayerType(View.LAYER_TYPE_HARDWARE, null); } catch (Throwable t) {}
-                            playYangshipinWithExoPlayer(url);
-                        });
-                    } else if (currentIsYangshipin && !exoPlayerActive && url.contains("_web.m3u8")) {
-                        // CCTV3/8:CMG WASM加密流 → 不切ExoPlayer,用WebView<video>播放 + SOFTWARE(避免SurfaceView overlay bug)
-                        handler.post(() -> {
-                            try { webView.setLayerType(View.LAYER_TYPE_SOFTWARE, null); } catch (Throwable t) {}
-                            try { webView.requestLayout(); webView.invalidate(); } catch (Throwable t) {}
-                            updateDebugPanel("M3U8_WEB_CMG",
-                                    "CCTV3/8 CMG WASM流,WebView播放+SOFTWARE:" + shortenUrl(url));
+                            playYangshipinWithExoPlayer(finalM3u8Url);
                         });
                     }
                 }
