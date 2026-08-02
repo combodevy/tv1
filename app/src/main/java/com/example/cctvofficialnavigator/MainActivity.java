@@ -335,13 +335,19 @@ public final class MainActivity extends Activity {
                     final String shortUrl = url.length() > 80 ? url.substring(0, 70) + "..." : url;
                     handler.post(() -> updateDebugPanel("M3U8_" + (willCallExo ? "OK_EXO" : "SKIP"),
                             (willCallExo ? "将切ExoPlayer:" : "不切ExoPlayer:") + shortUrl));
-                    // ================= CCTV-3/6/8 yangshipin 桌面端:截到 m3u8 立刻切 ExoPlayer 原生播放 ===============
-                    // 只有当前频道是 yangshipin 桌面端(currentIsYangshipin=true)并且 ExoPlayer 还没启动(exoPlayerActive=false)时才切,
-                    // 其他台(CCTV1/5+/广西台)→不切,继续用 WebView 播放
-                    if (willCallExo) {
+                    // ================= CCTV-3/6/8 yangshipin 桌面端:截到 m3u8 的处理 ===============
+                    // 【关键:CCTV6 vs CCTV3/8 的流完全不同!】
+                    //   CCTV6 用标准 HLS.js → 请求 _fhd.m3u8 (标准HLS流) → 切 ExoPlayer 原生播放 → ✅正常
+                    //   CCTV3/8 用 CMG WASM 播放器(WebAssembly+WebGL解码) → 请求 _web.m3u8 (WASM特制流)
+                    //     → ExoPlayer 解不了 → 绿屏; 替换成_fhd → 404 → 黑屏
+                    //     → 正确做法:不切ExoPlayer!让WebView里的CMG WASM播放器自己播(WebGL渲染不依赖SurfaceView)
+                    if (currentIsYangshipin && !exoPlayerActive && url.contains("_fhd.m3u8")) {
                         final String finalM3u8Url = url;
-                        // shouldInterceptRequest 在子线程,切回主线程操作 UI(隐藏 WebView / 创建 ExoPlayer)
                         handler.post(() -> playYangshipinWithExoPlayer(finalM3u8Url));
+                    } else if (currentIsYangshipin && !exoPlayerActive && url.contains("_web.m3u8")) {
+                        // CCTV3/8 的 _web.m3u8 流:不切 ExoPlayer,继续用 WebView 的 CMG WASM 播放器
+                        handler.post(() -> updateDebugPanel("M3U8_WEB_CMG",
+                                "CCTV3/8 CMG WASM流,不切ExoPlayer,用WebView播放:" + shortenUrl(url)));
                     }
                 }
                 return null; // 不拦截,让请求正常发出(hls.js 兜底和其他逻辑继续正常工作)
@@ -1249,27 +1255,19 @@ public final class MainActivity extends Activity {
         currentIsYangshipin = useDesktop;
         releaseExoPlayer();  // 释放旧的 ExoPlayer(如果有),移除 PlayerView
         try { webView.setVisibility(View.VISIBLE); } catch (Throwable t) {}
-        // ===================== 关键修复:按频道动态切换 WebView LayerType =====================
-        // 上一版全局设LAYER_TYPE_SOFTWARE导致所有台(CCTV1/5+/广西台)都有声音没画面(软件渲染模式下
-        // 很多WebView版本的硬件解码器输出Surface无法绑定到Canvas位图→像素画不出来,但解码器在播→有声音没画面)
-        // 修复策略:
-        //  - 【CCTV-6/3/8(yangshipin桌面端,useDesktop=true)】:切LAYER_TYPE_SOFTWARE
-        //    根治Chromium SurfaceView overlay位置计算错误bug→overlay合成不走这条路,直接位图渲染画面能出来
-        //  - 【其他所有台(默认移动UA,useDesktop=false)】:保持LAYER_TYPE_HARDWARE硬件加速
-        //    正常性能,正常Surface overlay合成,画面正常
-        // 切layerType后必须强制requestLayout()+invalidate()触发WebView重建渲染路径/合成层,否则部分机型不生效
-        if (useDesktop) {
-            try { webView.setLayerType(View.LAYER_TYPE_SOFTWARE, null); } catch (Throwable t) {}
-            try { android.util.Log.i("CCTV-TV", "[LAYER_SWITCH] " + channel.name + "(yangshipin桌面端) → LAYER_TYPE_SOFTWARE 软件渲染(根治overlay合成bug)"); } catch (Throwable t) {}
-        } else {
-            try { webView.setLayerType(View.LAYER_TYPE_HARDWARE, null); } catch (Throwable t) {}
-            try { android.util.Log.i("CCTV-TV", "[LAYER_SWITCH] " + channel.name + "(非yangshipin) → LAYER_TYPE_HARDWARE 硬件加速(正常性能)"); } catch (Throwable t) {}
-        }
+        // ===================== 关键修复:所有频道统一用 LAYER_TYPE_HARDWARE =====================
+        // 之前 yangshipin 频道用 LAYER_TYPE_SOFTWARE 是为了根治 CCTV6 的 SurfaceView overlay bug。
+        // 但现在 CCTV6 切 ExoPlayer 后 WebView 被隐藏,GONE 之后 LayerType 完全不影响 CCTV6 画面。
+        // 而 CCTV3/8 不切 ExoPlayer,继续用 WebView 的 CMG WASM 播放器(WebGL 渲染),
+        //   WebGL 必须在 LAYER_TYPE_HARDWARE 下才能工作!SOFTWARE 会禁用 WebGL → CMG 播放器黑屏!
+        // 所以:所有频道统一 HARDWARE。
+        try { webView.setLayerType(View.LAYER_TYPE_HARDWARE, null); } catch (Throwable t) {}
+        try { android.util.Log.i("CCTV-TV", "[LAYER_SWITCH] " + channel.name + " → LAYER_TYPE_HARDWARE (WebGL需要硬件加速)"); } catch (Throwable t) {}
         try { webView.requestLayout(); webView.invalidate(); } catch (Throwable t) {}
         // 记录 UA + LayerType 切换情况(便于调试)
         webView.getSettings().setUserAgentString(useDesktop ? DESKTOP_UA : null);
-        updateDebugPanel(useDesktop ? "UA:桌面 LAYER:软" : "UA:移动 LAYER:硬",
-                useDesktop ? "yangshipin桌面端CCTV6 软件渲染" : "标准移动UA 硬件加速");
+        updateDebugPanel(useDesktop ? "UA:桌面 LAYER:硬" : "UA:移动 LAYER:硬",
+                useDesktop ? "yangshipin桌面端 硬件加速(WebGL)" : "标准移动UA 硬件加速");
         if (useDesktop) {
             // 央视频桌面端(yangshipin.cn/tv/home?pid=XXX):带 additionalHttpHeaders 加载
             //  核心就是 2 个 header:
@@ -1640,29 +1638,15 @@ public final class MainActivity extends Activity {
             return;
         }
         try {
-            // ============================== 关键修复:CCTV3/8绿屏根因 ==============================
-            // 用户截图:底部Toast「已切换到原生播放器」→ExoPlayer确实启动了,但画面纯绿屏。
-            // 之前抓到的CCTV3/8 m3u8 URL后缀是 _web.m3u8 (给HLS.js/WebGL解码的流,YUV颜色空间/Range
-            // 和原生播放器不兼容,MediaCodec解码后RGB转换错→纯绿屏/紫屏)。
-            // 而CCTV6正常播放的流后缀是 _fhd.m3u8 (给原生/桌面Chrome播放的标准HLS流,YUV颜色空间标准)。
-            // 所以这里:把截到的 _web.m3u8 自动替换成 _fhd.m3u8,再喂给ExoPlayer→和CCTV6完全同流!
-            // 如果 _web 替换失败(流本身就是_fhd的,比如CCTV6),就用原始URL。
-            String originalM3u8 = m3u8Url;
-            String fixedM3u8 = m3u8Url.replace("_web.m3u8", "_fhd.m3u8")
-                                     .replace("_web_",      "_fhd_");   // 双保险:也替换中间的_web_片段
-            final boolean didReplace = !fixedM3u8.equals(originalM3u8);
-            if (didReplace) {
-                Log.i("CCTV-TV", "[M3U8_FIX] 检测到_web.m3u8流(易绿屏),替换为_fhd.m3u8流");
-                updateDebugPanel("M3U8_WEB→FHD",
-                        "YES! 原URL:" + shortenUrl(originalM3u8).substring(0, Math.min(50, originalM3u8.length())));
-            }
-            // 最终播放URL:优先用替换后的_fhd后缀流
-            final String playUrl = (fixedM3u8 != null && !fixedM3u8.isEmpty()) ? fixedM3u8 : originalM3u8;
+            // ============================== 注意:此方法只处理 _fhd.m3u8 (CCTV6 标准HLS流) ==============================
+            // _web.m3u8 (CCTV3/8 CMG WASM 特制流) 在 shouldInterceptRequest 里已经拦截,不会进到这里。
+            // 所以这里 m3u8Url 一定是 _fhd.m3u8,不需要做任何后缀替换。
+            final String playUrl = m3u8Url;
             // 1. 隐藏 WebView(黑屏的来源) + 暂停 WebView 渲染(省电)
             webView.onPause();
             webView.setVisibility(View.GONE);
-            Log.i("CCTV-TV", "[EXOPLAYER_START] CCTV-3/6/8 切 ExoPlayer 原生播放, m3u8=" + playUrl);
-            updateDebugPanel("EXOPLAYER_START", "切原生播放:" + (didReplace ? "(web→fhd替换后) " : "") + shortenUrl(playUrl));
+            Log.i("CCTV-TV", "[EXOPLAYER_START] CCTV-6 切 ExoPlayer 原生播放, m3u8=" + playUrl);
+            updateDebugPanel("EXOPLAYER_START", "切原生播放:" + shortenUrl(playUrl));
 
             // ============== 2. 创建 DataSource.Factory,带和 WebView 完全一致的请求头(解决防盗链) ==============
             // 【关键:为什么CCTV-6能播,CCTV-3/8绿屏?】
