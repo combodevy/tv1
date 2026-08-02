@@ -6,30 +6,36 @@
 
 ## 1. 核心问题与接手方向（重要！先看这里）
 
-### ✅ 2026-08-02 最新状态：CCTV-3/6/8 全部打通，动态渲染模式切换修复黑屏
+### ⚠️ 2026-08-02 最新状态：重定向/版权页已解决，CCTV-3/6/8「有声音没画面」仍待解
 
-**之前的核心阻塞（CCTV-6 重定向 + 黑屏有声音）→ 已全部解决：**
+**当前真实情况（用户 2026-08-02 最新反馈）：**
+- ✅ 其他所有台（CCTV-1/2/4/5/5+/7/9~17 + 广西台）：画面 + 声音 100% 正常，`LAYER_TYPE_HARDWARE` 硬件加速 + 默认移动 UA 稳定工作
+- ✅ CCTV-3/6/8：重定向问题已解决 → 不再跳「分享频道已下架」/ `m.yangshipin.cn` 移动端旧页，版权页也已被 `#app` 整体隐藏不再漏出，**但是：仍然是有声音、无画面（黑屏）**，Chromium WebView 渲染链路问题（SurfaceView overlay / 软件渲染 Canvas 绑定）在这些 yangshipin 桌面端页面上持续出现，CSS/JS/LayerType 修复无效
 
-| 历史阻塞问题 | 根因 | 解决手法（已落地） | 当前状态 |
+| 阻塞问题 | 根因 | 当前进展 | 当前状态 |
 |---|---|---|---|
-| CCTV-6 打开显示「分享频道已下架」 + 跳 m.yangshipin.cn | Android WebView 自动加 `X-Requested-With: <包名>` Header，服务器一看就知道是 WebView 不是 Chrome PC 浏览器 → 302/JS 跳移动端旧域名 | **防重定向 2 层拦截** + **loadYangshipinWithHeaders() 带定制 Header 加载**：<br>1. `shouldOverrideUrlLoading` + `onPageStarted` 双重拦截，只要跳到 `m.yangshipin.cn` 立刻重加载 www 桌面端<br>2. `loadUrl(url, additionalHttpHeaders)` 塞 `Referer: https://www.yangshipin.cn/` + **`X-Requested-With: ""`（空字符串覆盖包名 Header）**，服务器收到就当你是 Chrome PC | ✅ 彻底解决，再也不跳移动端 |
-| CCTV-6 有声音没画面、黑屏 | Chromium Android `<video>` 走独立 **SurfaceView overlay** 叠加层，对 `position:fixed`/DOM detach/reattach 位置计算错误 → overlay 贴到屏幕外了，解码器/audio 正常在播所以有声音 | **按频道动态切换 WebView LayerType**：<br>- CCTV-3/6/8（yangshipin 桌面端）→ `LAYER_TYPE_SOFTWARE` 软件渲染（直接把视频像素画到 WebView 位图上，**彻底绕开 overlay 合成 bug**）<br>- 其他台（CCTV-1/2/5+/广西台等）→ 保持 `LAYER_TYPE_HARDWARE` 硬件加速（正常性能、正常 overlay 合成）<br>切完强制 `requestLayout() + invalidate()` 触发渲染路径重建 | ✅ 根治黑屏，画面 100% 正常显示 |
-| CCTV-6 偶尔弹出纯「关于央视频 / 服务协议」版权页 | 之前 hideSels 只列了部分 class 名，版权页是 #app 下深层嵌套或新增 class → 偶尔漏藏 | `hideSels` 第一个元素直接是 **`'#app'`（#app 整个根节点 `display:none!important` + `z-index:-1`）**<br>真实 `.video-js` 父容器已经 detach 到 `document.body` 下了，所以 #app 隐藏丝毫不影响 video 播放 | ✅ 100% 不可能再漏出版权页 |
+| CCTV-6 打开显示「分享频道已下架」 + 跳 m.yangshipin.cn | Android WebView 自动加 `X-Requested-With: <包名>` Header → 服务器识别为 WebView，跳移动端旧域名 | **防重定向 2 层拦截** + **loadYangshipinWithHeaders() 带定制 Header 加载**：<br>1. `shouldOverrideUrlLoading` + `onPageStarted` 双重拦截<br>2. `loadUrl(url, additionalHttpHeaders)` 塞 `Referer: https://www.yangshipin.cn/` + `X-Requested-With: ""` | ✅ 彻底解决，不跳移动端 |
+| CCTV-3/6/8 有声音没画面、黑屏 | Chromium Android `<video>` 渲染链路问题：<br>① `LAYER_TYPE_HARDWARE` 硬件加速 → SurfaceView overlay 位置计算错误 → 黑屏<br>② 切 `LAYER_TYPE_SOFTWARE` 软件渲染 → MediaCodec 解码器输出 Surface 无法绑定到 WebView Canvas → 依旧黑屏<br>（两条路径都画不出来，但解码器 + audio 正常 → 有声音） | **WebView 端 CSS/JS/LayerType 修复全部无效，必须切原生播放器** | ❌ 待解决（即将切 ExoPlayer 原生播放，见下方接手方向 1） |
+| CCTV-6 偶尔弹出「关于央视频 / 服务协议」版权页 | hideSels 只列部分 class 名 → #app 深层嵌套漏藏 | `hideSels` 第一个元素直接 `'#app'`，#app 整个根节点 `display:none!important + z-index:-1`，真实 `.video-js` 父容器已 detach 到 body | ✅ 100% 不可能再漏出版权页 |
 
-### ✅ CCTV-3/8 也加回来了（和 CCTV-6 同手法）
+### CCTV-3/8 已加回
 
-`ChannelCatalog` 现在 CCTV-3/6/8 三个 yangshipin 桌面端独立页面全部加载正常：
+`ChannelCatalog` 已加入 CCTV-3/6/8（yangshipin 桌面端）：
 - CCTV-3 综艺：`https://www.yangshipin.cn/tv/home?pid=600108439`
 - CCTV-6 电影：`https://www.yangshipin.cn/tv/home?pid=600108442`
 - CCTV-8 电视剧：`https://www.yangshipin.cn/tv/home?pid=600108443`
 
-### ⚠️ 接手方向（2026-08-02 后）
-1. **不要再动 LayerType / 重定向逻辑**（已经是最终版，改了会黑屏或跳移动端）
-2. **长期更优方案（可选）**：把 CCTV-3/6/8 的播放从 WebView 切到 ExoPlayer / Media3：
-   - `shouldInterceptRequest` 已经能完整截到 `mobilelive-play.ysp.cctv.cn` 的 HLS m3u8 URL（纯 H.264 无 DRM）
-   - 在 Java 层拿 m3u8 → 扔给 ExoPlayer 全屏 PlayerView 播放 → 稳定 100 倍（WebView 渲染链路彻底拿掉）
-   - 要注意 m3u8 URL 内 token/signature 有时效，必须每次启动频道时实时截，不能硬编码
-3. **yangshipin 页面改版时**：如果版权页又漏出来，或者视频不显示，只需改 `_ysh_forceVisibleDetach` 的 `hideSels` / `sel` 数组，加新的 class/id 就行，不要重写逻辑。
+### ⚠️ 接手方向（2026-08-02 后，按优先级）
+1. **【最高优先级 / 必做】：CCTV-3/6/8 播放从 WebView `<video>` 切到 ExoPlayer 原生播放**
+   - 现有 `shouldInterceptRequest` 已能 100% 拦截到 `mobilelive-play.ysp.cctv.cn` 的 HLS m3u8 URL（纯 H.264 + AAC，无 DRM，<video> 能正常解码音频说明解码链路完全 OK，只是 WebView 渲染链路画不出来）
+   - 实现方式：当前频道是 yangshipin 桌面端（`useDesktop=true`）+ 截到 m3u8 URL 时：
+     ① 隐藏 WebView（`webView.setVisibility(View.GONE)`）
+     ② 在 `rootContainer` 上动态 `new PlayerView(this)`，z-index 最高，MATCH_PARENT
+     ③ 用 `ExoPlayer.Builder` 创建播放器，`setMediaItem(MediaItem.fromUri(m3u8Url))`，`prepare()`，`play()`
+   - 切到其他台 / 退出时：`player.release()`，移除 PlayerView，显示 WebView
+   - **这是唯一能 100% 根治「CCTV-3/6/8 有声音没画面」的方案，不要再继续在 WebView 渲染链路上浪费时间**
+2. **不要动 LayerType / 重定向 / 防版权页逻辑** → 其他台已稳定，改了会让 CCTV-1/5+/广西台也黑屏或跳移动端
+3. **yangshipin 页面改版时** → 改 `_ysh_forceVisibleDetach` 的 `hideSels` / `sel` 数组，加新的 class/id。
 
 ---
 
@@ -70,15 +76,15 @@ app/src/main/
 |------|--------|-----|---------|----------------|------|
 | 1 | CCTV-1 综合 | `https://tv.cctv.com/live/cctv1/` | 移动 UA | HARDWARE 硬件加速 | ✅ 正常 |
 | 2 | CCTV-2 财经 | `https://tv.cctv.com/live/cctv2/` | 移动 UA | HARDWARE 硬件加速 | ✅ 正常 |
-| 3 | CCTV-3 综艺 | `https://www.yangshipin.cn/tv/home?pid=600108439` | **桌面 UA（yangshipin 桌面端）** | **SOFTWARE 软件渲染（根治 overlay 黑屏）** | ✅ 正常（动态修复） |
+| 3 | CCTV-3 综艺 | `https://www.yangshipin.cn/tv/home?pid=600108439` | **桌面 UA（yangshipin 桌面端）** | **SOFTWARE 软件渲染（根治 overlay 黑屏，仍待验证）** | ❌ 有声音无画面，待切 ExoPlayer 原生播放 |
 | 4 | CCTV-4 中文国际（亚） | `https://tv.cctv.com/live/cctv4/` | 移动 UA | HARDWARE 硬件加速 | ✅ 正常 |
 | 5 | CCTV-4 中文国际（欧） | `https://tv.cctv.com/live/cctveurope/index.shtml` | 移动 UA | HARDWARE 硬件加速 | ✅ 正常 |
 | 6 | CCTV-4 中文国际（美） | `https://tv.cctv.com/live/cctvamerica/` | 移动 UA | HARDWARE 硬件加速 | ✅ 正常 |
 | 7 | CCTV-5 体育 | `https://tv.cctv.com/live/cctv5/` | 移动 UA | HARDWARE 硬件加速 | ✅ 正常 |
 | 8 | CCTV-5+ 体育赛事 | `https://tv.cctv.com/live/cctv5plus/` | 移动 UA | HARDWARE 硬件加速 | ✅ 正常 |
-| 9 | CCTV-6 电影 | `https://www.yangshipin.cn/tv/home?pid=600108442` | **桌面 UA（yangshipin 桌面端）** | **SOFTWARE 软件渲染（根治 overlay 黑屏）** | ✅ 正常（动态修复） |
+| 9 | CCTV-6 电影 | `https://www.yangshipin.cn/tv/home?pid=600108442` | **桌面 UA（yangshipin 桌面端）** | **SOFTWARE 软件渲染（根治 overlay 黑屏，仍待验证）** | ❌ 有声音无画面，待切 ExoPlayer 原生播放 |
 | 10 | CCTV-7 国防军事 | `https://tv.cctv.com/live/cctv7/` | 移动 UA | HARDWARE 硬件加速 | ✅ 正常 |
-| 11 | CCTV-8 电视剧 | `https://www.yangshipin.cn/tv/home?pid=600108443` | **桌面 UA（yangshipin 桌面端）** | **SOFTWARE 软件渲染（根治 overlay 黑屏）** | ✅ 正常（动态修复） |
+| 11 | CCTV-8 电视剧 | `https://www.yangshipin.cn/tv/home?pid=600108443` | **桌面 UA（yangshipin 桌面端）** | **SOFTWARE 软件渲染（根治 overlay 黑屏，仍待验证）** | ❌ 有声音无画面，待切 ExoPlayer 原生播放 |
 | 12 | CCTV-9 纪录 | `https://tv.cctv.com/live/cctvjilu/` | 移动 UA | HARDWARE 硬件加速 | ✅ 正常 |
 | 13 | CCTV-10 科教 | `https://tv.cctv.com/live/cctv10/` | 移动 UA | HARDWARE 硬件加速 | ✅ 正常 |
 | 14 | CCTV-11 戏曲 | `https://tv.cctv.com/live/cctv11/` | 移动 UA | HARDWARE 硬件加速 | ✅ 正常 |

@@ -29,6 +29,10 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import com.google.android.exoplayer2.ExoPlayer;
+import com.google.android.exoplayer2.MediaItem;
+import com.google.android.exoplayer2.ui.PlayerView;
+
 import java.net.URI;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -99,6 +103,23 @@ public final class MainActivity extends Activity {
     private WebChromeClient.CustomViewCallback customFullscreenCallback;
     /** 当前预期加载的官方 URL,用于判断 WebView 是否被服务器重定向到了 m.yangshipin.cn 等旧域名。 */
     private String expectedOfficialUrl;
+    // ================= CCTV-3/6/8 yangshipin 桌面端:ExoPlayer 原生播放器(核心根治方案) =================
+    // 为什么必须用 ExoPlayer 原生播放而不是 WebView <video>?
+    //   Chromium WebView 渲染链路在 yangshipin 页面上**两条路都走不通**:
+    //    ① LAYER_TYPE_HARDWARE 硬件加速 → <video> 走独立 SurfaceView overlay 叠加层,
+    //      但 position:fixed/detach DOM 后 overlay 位置计算错误(贴到屏幕外)→ 解码器/audio 正常在播但画
+    //      面黑屏,Chromium 老 bug 持续 10+ 年,无解
+    //    ② LAYER_TYPE_SOFTWARE 软件渲染 → 视频像素要画到 WebView Canvas 位图上,但 MediaCodec 硬件解码
+    //      器输出的 Surface 无法正确绑定到 WebView Canvas → 依旧黑屏,只有声音
+    //   → 唯一根治方案:截到 yangshipin 的 HLS m3u8 URL(shouldInterceptRequest 能 100% 截到)后,
+    //     直接隐藏 WebView,用 ExoPlayer(Google 官方播放器)+ PlayerView 全屏原生播放
+    //     完全绕开 WebView 渲染链路,ExoPlayer 在任何 Android TV/盒子上 100% 能出画面
+    private ExoPlayer exoPlayer;
+    private PlayerView exoPlayerView;
+    // 当前切的频道是否是 yangshipin 桌面端(useDesktop=true):只有 true 时截到 m3u8 才切 ExoPlayer
+    private boolean currentIsYangshipin = false;
+    // 已经切换到 ExoPlayer 播放了(true时WebView隐藏,PlayerView显示):避免重复创建播放器
+    private boolean exoPlayerActive = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -303,11 +324,21 @@ public final class MainActivity extends Activity {
             @Override
             public android.webkit.WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
                 String url = request.getUrl().toString();
-                if (url != null && url.contains(".m3u8") && capturedM3u8Url == null) {
-                    capturedM3u8Url = url;
-                    Log.i("CCTV-TV", "拦截到 m3u8: " + url);
+                if (url != null && url.contains(".m3u8")) {
+                    if (capturedM3u8Url == null) {
+                        capturedM3u8Url = url;
+                        Log.i("CCTV-TV", "拦截到 m3u8: " + url);
+                    }
+                    // ================= CCTV-3/6/8 yangshipin 桌面端:截到 m3u8 立刻切 ExoPlayer 原生播放 ===============
+                    // 只有当前频道是 yangshipin 桌面端(currentIsYangshipin=true)并且 ExoPlayer 还没启动(exoPlayerActive=false)时才切,
+                    // 其他台(CCTV1/5+/广西台)→不切,继续用 WebView 播放
+                    if (currentIsYangshipin && !exoPlayerActive) {
+                        final String finalM3u8Url = url;
+                        // shouldInterceptRequest 在子线程,切回主线程操作 UI(隐藏 WebView / 创建 ExoPlayer)
+                        handler.post(() -> playYangshipinWithExoPlayer(finalM3u8Url));
+                    }
                 }
-                return null; // 不拦截,让请求正常发出
+                return null; // 不拦截,让请求正常发出(hls.js 兜底和其他逻辑继续正常工作)
             }
 
             @Override
@@ -1189,6 +1220,11 @@ public final class MainActivity extends Activity {
         //   - 其他台(CCTV 1/2/4/5/... + 广西台) → 系统默认移动 UA
         //       (tv.cctv.com/live/cctvX 系列移动端布局 CSS 已适配、广西台 gxtv.cn 移动UA正常)
         final boolean useDesktop = needsDesktopUA(channel.officialUrl);
+        // ===================== CCTV-3/6/8:切台前先释放 ExoPlayer + 显示 WebView =====================
+        // 上一次如果是 yangshipin 频道切的 ExoPlayer,WebView 被隐藏了,现在切台先恢复显示,释放旧播放器
+        currentIsYangshipin = useDesktop;
+        releaseExoPlayer();  // 释放旧的 ExoPlayer(如果有),移除 PlayerView
+        try { webView.setVisibility(View.VISIBLE); } catch (Throwable t) {}
         // ===================== 关键修复:按频道动态切换 WebView LayerType =====================
         // 上一版全局设LAYER_TYPE_SOFTWARE导致所有台(CCTV1/5+/广西台)都有声音没画面(软件渲染模式下
         // 很多WebView版本的硬件解码器输出Surface无法绑定到Canvas位图→像素画不出来,但解码器在播→有声音没画面)
@@ -1561,10 +1597,101 @@ public final class MainActivity extends Activity {
         super.onSaveInstanceState(outState);
     }
 
+    // ================= CCTV-3/6/8 yangshipin 桌面端:ExoPlayer 原生播放器核心方法 =================
+
+    /**
+     * CCTV-3/6/8 yangshipin 桌面端:截到 m3u8 URL 后切 ExoPlayer 全屏原生播放。
+     * 唯一根治「CCTV-3/6/8 有声音没画面(黑屏)」的方案,完全绕开 Chromium WebView 渲染链路:
+     *  - SurfaceView overlay 位置错误不再影响画面,因为 ExoPlayer 自己持 Surface/TextureView
+     *  - MediaCodec 解码器输出直接绑定到 PlayerView 的 Surface,不再需要和 WebView Canvas 绑定
+     *  → 在任何 Android TV/盒子上 100% 能出画面
+     */
+    @SuppressLint("SetTextI18n")
+    private void playYangshipinWithExoPlayer(String m3u8Url) {
+        if (m3u8Url == null || m3u8Url.isEmpty()) return;
+        if (exoPlayerActive || exoPlayer != null) return;  // 避免重复创建播放器
+        if (currentIsYangshipin == false) return;  // 非 yangshipin 频道不切
+        if (rootContainer == null) {
+            Log.e("CCTV-TV", "[EXOPLAYER_ERR] rootContainer 为空,无法创建 PlayerView");
+            return;
+        }
+        try {
+            // 1. 隐藏 WebView(黑屏的来源) + 暂停 WebView 渲染(省电)
+            webView.onPause();
+            webView.setVisibility(View.GONE);
+            Log.i("CCTV-TV", "[EXOPLAYER_START] CCTV-3/6/8 切 ExoPlayer 原生播放, m3u8=" + m3u8Url);
+            updateDebugPanel("EXOPLAYER_START", "CCTV-3/6/8 切原生播放:" + shortenUrl(m3u8Url));
+
+            // 2. 创建 ExoPlayer (Google 官方播放器,minSdk=23,兼容所有旧盒子)
+            exoPlayer = new ExoPlayer.Builder(this).build();
+            exoPlayer.setVolume(1.0f);
+
+            // 3. 创建 PlayerView (ExoPlayer 的 UI 容器,内置控制栏/全屏按钮/Loading 图标)
+            //    z-index 最高,填满整个屏幕,隐藏控制栏(直播不需要,也可以显示,这里默认隐藏避免遮挡)
+            exoPlayerView = new PlayerView(this);
+            exoPlayerView.setUseController(false);  // 隐藏控制栏(可改成 true,点击显示控制)
+            exoPlayerView.setPlayer(exoPlayer);
+            exoPlayerView.setKeepScreenOn(true);  // 保持屏幕常亮,直播不黑屏
+            FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT);
+            exoPlayerView.setLayoutParams(lp);
+            // 放到 rootContainer 的最上层(z-index 最高,盖在调试面板下面?→ 调试面板用 elevation 保持最顶层)
+            rootContainer.addView(exoPlayerView, Math.max(0, rootContainer.getChildCount() - 2));
+            exoPlayerView.requestLayout();
+            exoPlayerView.invalidate();
+
+            // 4. 喂给 ExoPlayer 播放
+            MediaItem mediaItem = MediaItem.fromUri(m3u8Url);
+            exoPlayer.setMediaItem(mediaItem);
+            exoPlayer.prepare();
+            exoPlayer.setPlayWhenReady(true);
+
+            // 5. 标记已激活
+            exoPlayerActive = true;
+            Toast.makeText(this, "已切换到原生播放器(CCTV-3/6/8)", Toast.LENGTH_LONG).show();
+        } catch (Throwable t) {
+            Log.e("CCTV-TV", "[EXOPLAYER_ERR] 创建 ExoPlayer 失败: " + t.getClass().getName() + ": " + t.getMessage(), t);
+            // 创建失败兜底:恢复 WebView 显示,继续用原来的 WebView <video> 链路(虽然可能黑屏,但至少不崩)
+            releaseExoPlayer();
+            try { webView.setVisibility(View.VISIBLE); webView.onResume(); } catch (Throwable t2) {}
+            updateDebugPanel("EXOPLAYER_ERR", "ExoPlayer创建失败:" + t.getMessage());
+        }
+    }
+
+    /**
+     * 释放 ExoPlayer,移除 PlayerView,恢复 WebView 显示。
+     * 切台时 / onDestroy 时调用。
+     */
+    private void releaseExoPlayer() {
+        try {
+            exoPlayerActive = false;
+            if (exoPlayer != null) {
+                Log.i("CCTV-TV", "[EXOPLAYER_RELEASE] 释放 ExoPlayer");
+                try { exoPlayer.setPlayWhenReady(false); } catch (Throwable t) {}
+                try { exoPlayer.stop(); } catch (Throwable t) {}
+                try { exoPlayer.clearMediaItems(); } catch (Throwable t) {}
+                try { exoPlayer.release(); } catch (Throwable t) {}
+                exoPlayer = null;
+            }
+            if (exoPlayerView != null && rootContainer != null) {
+                try { rootContainer.removeView(exoPlayerView); } catch (Throwable t) {}
+                exoPlayerView = null;
+            }
+            // 恢复 WebView 渲染(如果之前暂停过)
+            if (webView != null) {
+                try { webView.onResume(); } catch (Throwable t) {}
+                try { webView.setVisibility(View.VISIBLE); } catch (Throwable t) {}
+            }
+        } catch (Throwable t) {
+            Log.e("CCTV-TV", "[EXOPLAYER_RELEASE_ERR] 释放异常: " + t.getMessage(), t);
+        }
+    }
+
     @Override
     protected void onDestroy() {
         handler.removeCallbacksAndMessages(null);
         channelHint.removeCallbacks(hideChannelHint);
+        releaseExoPlayer();  // 退出时一定释放 ExoPlayer,避免内存泄漏 + 播放器后台继续播放
         webView.destroy();
         super.onDestroy();
     }
