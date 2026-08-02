@@ -115,7 +115,7 @@ public final class MainActivity extends Activity {
     //     直接隐藏 WebView,用 ExoPlayer(Google 官方播放器)+ PlayerView 全屏原生播放
     //     完全绕开 WebView 渲染链路,ExoPlayer 在任何 Android TV/盒子上 100% 能出画面
     private ExoPlayer exoPlayer;
-    private PlayerView exoPlayerView;
+    private android.view.View exoPlayerView;  // 可能是 PlayerView 也可能是 TextureView,用通用 View 类型,切台统一 removeView
     // 当前切的频道是否是 yangshipin 桌面端(useDesktop=true):只有 true 时截到 m3u8 才切 ExoPlayer
     private boolean currentIsYangshipin = false;
     // 已经切换到 ExoPlayer 播放了(true时WebView隐藏,PlayerView显示):避免重复创建播放器
@@ -1620,33 +1620,79 @@ public final class MainActivity extends Activity {
             webView.onPause();
             webView.setVisibility(View.GONE);
             Log.i("CCTV-TV", "[EXOPLAYER_START] CCTV-3/6/8 切 ExoPlayer 原生播放, m3u8=" + m3u8Url);
-            updateDebugPanel("EXOPLAYER_START", "CCTV-3/6/8 切原生播放:" + shortenUrl(m3u8Url));
+            updateDebugPanel("EXOPLAYER_START", "切原生播放:" + shortenUrl(m3u8Url));
 
-            // 2. 创建 ExoPlayer (Google 官方播放器,minSdk=23,兼容所有旧盒子)
+            // ============== 2. 创建 DataSource.Factory,带和 WebView 完全一致的请求头(解决防盗链) ==============
+            // 【关键:为什么CCTV-6能播,CCTV-3/8绿屏?】
+            //   WebView 请求 m3u8: 自动带 Referer: yangshipin.cn + User-Agent:Chrome126 + Cookie
+            //   ExoPlayer 默认请求 m3u8: User-Agent="ExoPlayerLib/2.19.x",没有 Referer → 央视频服务器识别
+            //   为非官方浏览器请求,直接返回「测试绿屏流」(CCTV-6可能服务器限制不严,所以能正常流)
+            // → 所以必须在 ExoPlayer 的 HTTP 请求上把 User-Agent/Referer 补成和 WebView 一样!
+            String desktopUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
+            com.google.android.exoplayer2.upstream.DefaultHttpDataSource.Factory httpDsFactory =
+                    new com.google.android.exoplayer2.upstream.DefaultHttpDataSource.Factory()
+                            .setUserAgent(desktopUA)
+                            .setDefaultRequestProperties(java.util.Collections.singletonMap("Referer", "https://www.yangshipin.cn/"));
+            com.google.android.exoplayer2.source.hls.HlsMediaSource.Factory hlsFactory =
+                    new com.google.android.exoplayer2.source.hls.HlsMediaSource.Factory(httpDsFactory);
+
+            // 3. 创建 ExoPlayer (Google 官方播放器,minSdk=23,兼容所有旧盒子),绑定监听器
             exoPlayer = new ExoPlayer.Builder(this).build();
             exoPlayer.setVolume(1.0f);
+            // ===== ExoPlayer.Listener:把所有状态打到右上角调试面板,用户一看就知道问题在哪 =====
+            exoPlayer.addListener(new com.google.android.exoplayer2.Player.Listener() {
+                String stateName(int state) {
+                    switch (state) {
+                        case com.google.android.exoplayer2.Player.STATE_IDLE: return "IDLE";
+                        case com.google.android.exoplayer2.Player.STATE_BUFFERING: return "BUFFERING";
+                        case com.google.android.exoplayer2.Player.STATE_READY: return "READY";
+                        case com.google.android.exoplayer2.Player.STATE_ENDED: return "ENDED";
+                        default: return "UNK"+state;
+                    }
+                }
+                @Override public void onPlaybackStateChanged(int state) {
+                    String s = stateName(state) + (exoPlayer != null && exoPlayer.getPlayWhenReady() ? "/PLAYING" : "/PAUSED");
+                    Log.i("CCTV-TV", "[EXOPLAYER_STATE] " + s);
+                    updateDebugPanel("EXO_STATE", s);
+                }
+                @Override public void onVideoSizeChanged(com.google.android.exoplayer2.video.VideoSize videoSize) {
+                    String sz = "VID_SIZE " + videoSize.width + "x" + videoSize.height + " sarNum=" + videoSize.pixelWidthHeightRatio;
+                    Log.i("CCTV-TV", "[EXOPLAYER_VID_SIZE] " + sz);
+                    updateDebugPanel("EXO_VID", sz);
+                }
+                @Override public void onPlayerError(com.google.android.exoplayer2.PlaybackException error) {
+                    String err = "ERR code=" + error.errorCode + " " + error.getMessage();
+                    Log.e("CCTV-TV", "[EXOPLAYER_ERR] " + err, error);
+                    updateDebugPanel("EXO_ERR", err.substring(0, Math.min(60, err.length())));
+                }
+            });
 
-            // 3. 创建 PlayerView (ExoPlayer 的 UI 容器,内置控制栏/全屏按钮/Loading 图标)
-            //    z-index 最高,填满整个屏幕,隐藏控制栏(直播不需要,也可以显示,这里默认隐藏避免遮挡)
-            exoPlayerView = new PlayerView(this);
-            exoPlayerView.setUseController(false);  // 隐藏控制栏(可改成 true,点击显示控制)
-            exoPlayerView.setPlayer(exoPlayer);
-            exoPlayerView.setKeepScreenOn(true);  // 保持屏幕常亮,直播不黑屏
+            // 4. ★★★ 直接 new TextureView,不用 PlayerView 的 setSurfaceType(某些ExoPlayer版本无此API导致编译错) ★★★
+            //    SurfaceView 是独立叠加层,在模拟器+某些盒子上会出现:
+            //    YUV color range 错 → 绿屏; or 和 WebView GONE 后的空 Surface 合成错 → 绿屏
+            //    TextureView 走 View 合成路径,和其他 View 一样画到同一个 Canvas,100% 兼容所有设备
+            android.view.TextureView textureView = new android.view.TextureView(this);
+            textureView.setKeepScreenOn(true);  // 保持屏幕常亮,直播不黑屏
             FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
                     FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT);
-            exoPlayerView.setLayoutParams(lp);
-            // 放到 rootContainer 的最上层(z-index 最高,盖在调试面板下面?→ 调试面板用 elevation 保持最顶层)
-            rootContainer.addView(exoPlayerView, Math.max(0, rootContainer.getChildCount() - 2));
-            exoPlayerView.requestLayout();
-            exoPlayerView.invalidate();
+            textureView.setLayoutParams(lp);
+            // 把 TextureView 绑定到 ExoPlayer → 视频像素直接画到 TextureView
+            exoPlayer.setVideoTextureView(textureView);
+            // 放到 rootContainer 的最上层(z-index 最高,调试面板用 elevation 保持在最顶层)
+            rootContainer.addView(textureView, Math.max(0, rootContainer.getChildCount() - 2));
+            textureView.requestLayout();
+            textureView.invalidate();
+            // textureView 保存到 exoPlayerView 引用,切台时 releaseExoPlayer 统一 removeView
+            exoPlayerView = textureView;
 
-            // 4. 喂给 ExoPlayer 播放
+            // 5. 喂给 ExoPlayer 播放(HlsMediaSource + 带 Referer/UA 的 HTTP 头)
             MediaItem mediaItem = MediaItem.fromUri(m3u8Url);
-            exoPlayer.setMediaItem(mediaItem);
+            com.google.android.exoplayer2.source.MediaSource ms = hlsFactory.createMediaSource(mediaItem);
+            exoPlayer.setMediaSource(ms);
             exoPlayer.prepare();
             exoPlayer.setPlayWhenReady(true);
 
-            // 5. 标记已激活
+            // 6. 标记已激活
             exoPlayerActive = true;
             Toast.makeText(this, "已切换到原生播放器(CCTV-3/6/8)", Toast.LENGTH_LONG).show();
         } catch (Throwable t) {
@@ -1654,7 +1700,7 @@ public final class MainActivity extends Activity {
             // 创建失败兜底:恢复 WebView 显示,继续用原来的 WebView <video> 链路(虽然可能黑屏,但至少不崩)
             releaseExoPlayer();
             try { webView.setVisibility(View.VISIBLE); webView.onResume(); } catch (Throwable t2) {}
-            updateDebugPanel("EXOPLAYER_ERR", "ExoPlayer创建失败:" + t.getMessage());
+            updateDebugPanel("EXOPLAYER_ERR", "创建失败:" + t.getMessage());
         }
     }
 
