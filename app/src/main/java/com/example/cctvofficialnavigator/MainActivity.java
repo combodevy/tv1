@@ -190,7 +190,14 @@ public final class MainActivity extends Activity {
             settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
         }
 
-        webView.setLayerType(View.LAYER_TYPE_HARDWARE, null);
+        // [CCTV-6 黑屏终极修复 1/2] 禁用硬件加速→强制走软件渲染(Canvas/Skia路径),彻底绕过 SurfaceView overlay 合成
+        // Android WebView 视频像素本来走独立 SurfaceView overlay(叠加在 WebView 上面),当 position:fixed/detach DOM 时
+        // overlay 位置计算错误→画面黑屏但有声音(Chromium 老bug).用软件渲染直接把视频像素绘制到 WebView 位图上,
+        // 虽然性能略差但彻底根治 overlay 合成bug,TV/大屏场景下解码后像素量不大软件渲染完全扛得住.
+        webView.setLayerType(View.LAYER_TYPE_SOFTWARE, null);
+        // [CCTV-6 黑屏终极修复 2/2] WebView 背景透明+初始缩放 100%:避免背景色影响画面显示,避免缩放比例错乱导致盒模型计算错误
+        try { webView.setBackgroundColor(android.graphics.Color.TRANSPARENT); } catch (Throwable t) {}
+        try { settings.setSupportZoom(false); settings.setBuiltInZoomControls(false); webView.setInitialScale(100); } catch (Throwable t) {}
         // 允许在 file: 协议下访问内容(某些缓存/本地资源场景需要)
         settings.setAllowFileAccess(true);
         settings.setAllowContentAccess(true);
@@ -736,24 +743,26 @@ public final class MainActivity extends Activity {
                 "    var vs=document.querySelectorAll('video[id^=myvideo],video');" +
                 "    for(var j=0;j<vs.length;j++){try{vs[j].muted=true;vs[j].play();}catch(e){}try{vs[j].dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window}));}catch(e){}}" +
                 "  }" +
-                // yangshipin 专属:1)只隐藏不含video的垃圾UI层(不再隐藏全局#app根,避免影响Vue/MediaSource挂载)
-                //                2)Android WebView经典坑:绝对不要对<video>自身position:fixed或detach video元素本身!
-                //                  只detach video的父级DIV(.video-js/.video-con/[id^=vodbox]),父容器用position:fixed 100vw/h
-                //                  video元素自身用width:100% height:100% relative填充父容器 → 让Chromium正确计算video Surface overlay尺寸/位置(修复黑屏有声音)
-                //                3)z-index=2147483647(32-bit int最大值,绝对最顶层)
-                //                4)detach父容器后对readyState>=2的video执行一次pause()+play()强制重建Surface overlay
+                // yangshipin 专属:1)直接隐藏#app整个根节点(真实.video-js已detach到body首节点,#app只剩版权页垃圾层,整体隐藏绝不漏)
+                //                2)Android WebView最终修复:WebView已切LAYER_TYPE_SOFTWARE(软件渲染),彻底跳过SurfaceView overlay合成bug
+                //                  detach父容器(.video-js/.video-con),父容器position:fixed 100vw/h z-index=2147483647
+                //                  video自身width/height=100% relative填充父容器
+                //                3)超级详细console.log(onConsoleMessage转发logcat),每一步能看到sel是否命中、容器尺寸、video状态
                 // 函数第一行if(!_ysh_is())return → 其他台零执行零影响
                 "  function _ysh_forceVisibleDetach(){" +
                 "    if(!_ysh_is())return;" +
-                // Step 1: 仅隐藏新版空壳播放UI(不含真实video的节点).不再隐藏整个#app根节点(避免影响全局挂载,引发video内部计算错)
-                "    var hideSels=['.container[data-v-03d5f916]','.container','.y-full','.y-full-bg','.y-full-control','.y-full-control-btn','.volume-muted-tip-container','.video-status-tip','.y-player-gift-list','.y-player-danmu','.y-player-side-panel','.y-player-bottom-bar'];" +
-                "    for(var hi=0;hi<hideSels.length;hi++){try{var hn=document.querySelector(hideSels[hi]);if(hn){hn.style.setProperty('display','none','important');hn.style.setProperty('visibility','hidden','important');hn.style.setProperty('opacity','0','important');hn.style.setProperty('z-index','-1','important');}}catch(err){}}" +
+                "    try{console.log('[CCTV6_STEP0_START] _ysh_forceVisibleDetach running host='+(location.host||'')+' title='+document.title);}catch(e){}" +
+                // Step 1: 直接#app整体隐藏(版权页100%在#app里,整体隐藏绝不可能漏出),比逐个子节点隐藏可靠100倍
+                // 真实.video-js父容器已在Step2 detach到document.body下(脱离#app),所以#app隐藏丝毫不影响video播放
+                "    var hideSels=['#app','.container[data-v-03d5f916]','.container','.y-full','.y-full-bg','.y-full-control','.y-full-control-btn','.volume-muted-tip-container','.video-status-tip','.y-player-gift-list','.y-player-danmu','.y-player-side-panel','.y-player-bottom-bar'];" +
+                "    for(var hi=0;hi<hideSels.length;hi++){try{var hn=document.querySelector(hideSels[hi]);if(hn){try{console.log('[CCTV6_HIDE] sel='+hideSels[hi]+' tag='+hn.tagName+' class='+(hn.className||''));}catch(e){}hn.style.setProperty('display','none','important');hn.style.setProperty('visibility','hidden','important');hn.style.setProperty('opacity','0','important');hn.style.setProperty('z-index','-1','important');}}catch(err){}}" +
                 // Step 2: detach VIDEO父级容器DIV(绝对不要detach<video>元素本身)
                 // sel顺序:.video-js(video.js包装层,离video最近)→.video-con→[id^=vodbox]→旧版tv-main-con-*链
                 "    var sel=['.video-js','.video-con','[id^=vodbox]','.tv-main-con-l-vid','.tv-main-con-l','.tv-main-con','.tv-main','.tv','.tv-home'];" +
-                "    var el=null;for(var si=0;si<sel.length;si++){try{var e=document.querySelector(sel[si]);if(e){el=e;break;}}catch(err){}}" +
+                "    var el=null;var hitIdx=-1;for(var si=0;si<sel.length;si++){try{var e=document.querySelector(sel[si]);if(e){el=e;hitIdx=si;break;}}catch(err){}}" +
+                "    try{console.log('[CCTV6_STEP2_SEL] hitIdx='+hitIdx+' sel='+sel[hitIdx]+' el_tag='+(el?el.tagName:null)+' el_class='+(el&&el.className||'')+' el_id='+(el&&el.id||'')+' el_parentBefore='+(el&&el.parentNode?el.parentNode.tagName:null));}catch(e){}" +
                 "    if(el){" +
-                "      if(el.parentNode!==document.body){try{el.parentNode.removeChild(el);document.body.insertBefore(el,document.body.firstChild);}catch(err){}}" +
+                "      if(el.parentNode!==document.body){try{el.parentNode.removeChild(el);document.body.insertBefore(el,document.body.firstChild);}catch(err){try{console.log('[CCTV6_STEP2_DETACH_ERR] '+err.name+': '+err.message);}catch(e){}}}" +
                 "      try{" +
                 "        el.style.setProperty('position','fixed','important');el.style.setProperty('left','0','important');el.style.setProperty('top','0','important');" +
                 "        el.style.setProperty('width','100vw','important');el.style.setProperty('height','100vh','important');" +
@@ -763,13 +772,13 @@ public final class MainActivity extends Activity {
                 "        el.style.setProperty('background','#000','important');el.style.setProperty('display','block','important');" +
                 "        el.style.setProperty('visibility','visible','important');el.style.setProperty('opacity','1','important');" +
                 "        el.style.setProperty('transform','none','important');el.style.setProperty('margin','0','important');el.style.setProperty('padding','0','important');" +
-                "      }catch(err){}" +
-                "    }" +
-                // Step 3: <video>元素自身Android WebView关键修复:
-                //  - 绝对不用position:fixed(和video Surface overlay计算严重冲突→黑屏有声音)
-                //  - 用width:100% height:100% position:relative → 填满已fixed的父容器
-                //  - readyState>=2的video执行一次pause()+play()强制重建Surface overlay绑定
+                // log detach后容器真实尺寸(getBoundingClientRect最准,比style属性可靠)
+                "        var r=el.getBoundingClientRect();try{console.log('[CCTV6_STEP2_RECT] el_rect: x='+r.x+' y='+r.y+' w='+r.width+' h='+r.height+' viewport_w='+window.innerWidth+' viewport_h='+window.innerHeight);}catch(e){}" +
+                "      }catch(err){try{console.log('[CCTV6_STEP2_STYLE_ERR] '+err.name+': '+err.message);}catch(e){}}" +
+                "    }else{try{console.log('[CCTV6_STEP2_NO_PARENT] WARN: no parent container found (sel数组全没命中, video将依赖原始DOM播放)');}catch(e){}}" +
+                // Step 3: <video>元素自身强制样式 + log超级详细状态
                 "    var vs2=document.querySelectorAll('video[id^=myvideo],video');" +
+                "    try{console.log('[CCTV6_STEP3_VIDEO] found '+vs2.length+' video elements');}catch(e){}" +
                 "    for(var vi=0;vi<vs2.length;vi++){" +
                 "      try{" +
                 "        var vv=vs2[vi];" +
@@ -783,10 +792,13 @@ public final class MainActivity extends Activity {
                 "        vv.style.setProperty('visibility','visible','important');vv.style.setProperty('opacity','1','important');" +
                 "        vv.style.setProperty('transform','none','important');vv.style.setProperty('overflow','visible','important');" +
                 "        vv.style.setProperty('margin','0','important');vv.style.setProperty('padding','0','important');" +
-                // 强制重建Surface overlay(修复Chromium detach DOM后video画面丢失的经典bug)
-                "        if(vv.readyState>=2 && !vv.__cctvRebuildSurface){vv.__cctvRebuildSurface=1;try{vv.pause();vv.play();}catch(err2){}}" +
-                "      }catch(err){}" +
+                // 软件渲染下依旧pause()/play()触发MediaCodec重新bind(部分机型detach后解码器输出未连上新Canvas)
+                "        var didRebuild=false;if(vv.readyState>=2 && !vv.__cctvRebuildSurface){vv.__cctvRebuildSurface=1;didRebuild=true;try{vv.pause();vv.play();}catch(err2){}}" +
+                // log每一个video的全部关键状态 → logcat一眼看出是没播放还是没渲染
+                "        var vr=vv.getBoundingClientRect();try{console.log('[CCTV6_VIDEO_' + vi + ']' + ' id='+(vv.id||'') + ' tag='+vv.tagName + ' rect{x='+vr.x+',y='+vr.y+',w='+vr.width+',h='+vr.height+'}' + ' cssW='+vv.style.width+' cssH='+vv.style.height + ' vW='+vv.videoWidth+' vH='+vv.videoHeight + ' readyS='+vv.readyState + ' netS='+vv.networkState + ' paused='+vv.paused + ' muted='+vv.muted + ' vol='+vv.volume + ' curSrc='+String(vv.src||vv.currentSrc||'').slice(0,80) + ' didRebuildPausePlay='+didRebuild);}catch(e){}" +
+                "      }catch(err){try{console.log('[CCTV6_STEP3_ERR_' + vi + '] '+err.name+': '+err.message);}catch(e){}}" +
                 "    }" +
+                "    try{console.log('[CCTV6_STEP4_END] _ysh_forceVisibleDetach done. body_children_count='+(document.body?document.body.children.length:0));}catch(e){}" +
                 "  }" +
                 "  function FastLoading(){" +
                 "    applyCss();" +
@@ -828,24 +840,26 @@ public final class MainActivity extends Activity {
                 "    var vs=document.querySelectorAll('video[id^=myvideo],video');" +
                 "    for(var j=0;j<vs.length;j++){try{vs[j].muted=true;vs[j].play();}catch(e){}try{vs[j].dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window}));}catch(e){}}" +
                 "  }" +
-                // yangshipin 专属:1)只隐藏不含video的垃圾UI层(不再隐藏全局#app根,避免影响Vue/MediaSource挂载)
-                //                2)Android WebView经典坑:绝对不要对<video>自身position:fixed或detach video元素本身!
-                //                  只detach video的父级DIV(.video-js/.video-con/[id^=vodbox]),父容器用position:fixed 100vw/h
-                //                  video元素自身用width:100% height:100% relative填充父容器 → 让Chromium正确计算video Surface overlay尺寸/位置(修复黑屏有声音)
-                //                3)z-index=2147483647(32-bit int最大值,绝对最顶层)
-                //                4)detach父容器后对readyState>=2的video执行一次pause()+play()强制重建Surface overlay
+                // yangshipin 专属:1)直接隐藏#app整个根节点(真实.video-js已detach到body首节点,#app只剩版权页垃圾层,整体隐藏绝不漏)
+                //                2)Android WebView最终修复:WebView已切LAYER_TYPE_SOFTWARE(软件渲染),彻底跳过SurfaceView overlay合成bug
+                //                  detach父容器(.video-js/.video-con),父容器position:fixed 100vw/h z-index=2147483647
+                //                  video自身width/height=100% relative填充父容器
+                //                3)超级详细console.log(onConsoleMessage转发logcat),每一步能看到sel是否命中、容器尺寸、video状态
                 // 函数第一行if(!_ysh_is())return → 其他台零执行零影响
                 "  function _ysh_forceVisibleDetach(){" +
                 "    if(!_ysh_is())return;" +
-                // Step 1: 仅隐藏新版空壳播放UI(不含真实video的节点).不再隐藏整个#app根节点(避免影响全局挂载,引发video内部计算错)
-                "    var hideSels=['.container[data-v-03d5f916]','.container','.y-full','.y-full-bg','.y-full-control','.y-full-control-btn','.volume-muted-tip-container','.video-status-tip','.y-player-gift-list','.y-player-danmu','.y-player-side-panel','.y-player-bottom-bar'];" +
-                "    for(var hi=0;hi<hideSels.length;hi++){try{var hn=document.querySelector(hideSels[hi]);if(hn){hn.style.setProperty('display','none','important');hn.style.setProperty('visibility','hidden','important');hn.style.setProperty('opacity','0','important');hn.style.setProperty('z-index','-1','important');}}catch(err){}}" +
+                "    try{console.log('[CCTV6_STEP0_START] _ysh_forceVisibleDetach running host='+(location.host||'')+' title='+document.title);}catch(e){}" +
+                // Step 1: 直接#app整体隐藏(版权页100%在#app里,整体隐藏绝不可能漏出),比逐个子节点隐藏可靠100倍
+                // 真实.video-js父容器已在Step2 detach到document.body下(脱离#app),所以#app隐藏丝毫不影响video播放
+                "    var hideSels=['#app','.container[data-v-03d5f916]','.container','.y-full','.y-full-bg','.y-full-control','.y-full-control-btn','.volume-muted-tip-container','.video-status-tip','.y-player-gift-list','.y-player-danmu','.y-player-side-panel','.y-player-bottom-bar'];" +
+                "    for(var hi=0;hi<hideSels.length;hi++){try{var hn=document.querySelector(hideSels[hi]);if(hn){try{console.log('[CCTV6_HIDE] sel='+hideSels[hi]+' tag='+hn.tagName+' class='+(hn.className||''));}catch(e){}hn.style.setProperty('display','none','important');hn.style.setProperty('visibility','hidden','important');hn.style.setProperty('opacity','0','important');hn.style.setProperty('z-index','-1','important');}}catch(err){}}" +
                 // Step 2: detach VIDEO父级容器DIV(绝对不要detach<video>元素本身)
                 // sel顺序:.video-js(video.js包装层,离video最近)→.video-con→[id^=vodbox]→旧版tv-main-con-*链
                 "    var sel=['.video-js','.video-con','[id^=vodbox]','.tv-main-con-l-vid','.tv-main-con-l','.tv-main-con','.tv-main','.tv','.tv-home'];" +
-                "    var el=null;for(var si=0;si<sel.length;si++){try{var e=document.querySelector(sel[si]);if(e){el=e;break;}}catch(err){}}" +
+                "    var el=null;var hitIdx=-1;for(var si=0;si<sel.length;si++){try{var e=document.querySelector(sel[si]);if(e){el=e;hitIdx=si;break;}}catch(err){}}" +
+                "    try{console.log('[CCTV6_STEP2_SEL] hitIdx='+hitIdx+' sel='+sel[hitIdx]+' el_tag='+(el?el.tagName:null)+' el_class='+(el&&el.className||'')+' el_id='+(el&&el.id||'')+' el_parentBefore='+(el&&el.parentNode?el.parentNode.tagName:null));}catch(e){}" +
                 "    if(el){" +
-                "      if(el.parentNode!==document.body){try{el.parentNode.removeChild(el);document.body.insertBefore(el,document.body.firstChild);}catch(err){}}" +
+                "      if(el.parentNode!==document.body){try{el.parentNode.removeChild(el);document.body.insertBefore(el,document.body.firstChild);}catch(err){try{console.log('[CCTV6_STEP2_DETACH_ERR] '+err.name+': '+err.message);}catch(e){}}}" +
                 "      try{" +
                 "        el.style.setProperty('position','fixed','important');el.style.setProperty('left','0','important');el.style.setProperty('top','0','important');" +
                 "        el.style.setProperty('width','100vw','important');el.style.setProperty('height','100vh','important');" +
@@ -855,13 +869,13 @@ public final class MainActivity extends Activity {
                 "        el.style.setProperty('background','#000','important');el.style.setProperty('display','block','important');" +
                 "        el.style.setProperty('visibility','visible','important');el.style.setProperty('opacity','1','important');" +
                 "        el.style.setProperty('transform','none','important');el.style.setProperty('margin','0','important');el.style.setProperty('padding','0','important');" +
-                "      }catch(err){}" +
-                "    }" +
-                // Step 3: <video>元素自身Android WebView关键修复:
-                //  - 绝对不用position:fixed(和video Surface overlay计算严重冲突→黑屏有声音)
-                //  - 用width:100% height:100% position:relative → 填满已fixed的父容器
-                //  - readyState>=2的video执行一次pause()+play()强制重建Surface overlay绑定
+                // log detach后容器真实尺寸(getBoundingClientRect最准,比style属性可靠)
+                "        var r=el.getBoundingClientRect();try{console.log('[CCTV6_STEP2_RECT] el_rect: x='+r.x+' y='+r.y+' w='+r.width+' h='+r.height+' viewport_w='+window.innerWidth+' viewport_h='+window.innerHeight);}catch(e){}" +
+                "      }catch(err){try{console.log('[CCTV6_STEP2_STYLE_ERR] '+err.name+': '+err.message);}catch(e){}}" +
+                "    }else{try{console.log('[CCTV6_STEP2_NO_PARENT] WARN: no parent container found (sel数组全没命中, video将依赖原始DOM播放)');}catch(e){}}" +
+                // Step 3: <video>元素自身强制样式 + log超级详细状态
                 "    var vs2=document.querySelectorAll('video[id^=myvideo],video');" +
+                "    try{console.log('[CCTV6_STEP3_VIDEO] found '+vs2.length+' video elements');}catch(e){}" +
                 "    for(var vi=0;vi<vs2.length;vi++){" +
                 "      try{" +
                 "        var vv=vs2[vi];" +
@@ -875,10 +889,13 @@ public final class MainActivity extends Activity {
                 "        vv.style.setProperty('visibility','visible','important');vv.style.setProperty('opacity','1','important');" +
                 "        vv.style.setProperty('transform','none','important');vv.style.setProperty('overflow','visible','important');" +
                 "        vv.style.setProperty('margin','0','important');vv.style.setProperty('padding','0','important');" +
-                // 强制重建Surface overlay(修复Chromium detach DOM后video画面丢失的经典bug)
-                "        if(vv.readyState>=2 && !vv.__cctvRebuildSurface){vv.__cctvRebuildSurface=1;try{vv.pause();vv.play();}catch(err2){}}" +
-                "      }catch(err){}" +
+                // 软件渲染下依旧pause()/play()触发MediaCodec重新bind(部分机型detach后解码器输出未连上新Canvas)
+                "        var didRebuild=false;if(vv.readyState>=2 && !vv.__cctvRebuildSurface){vv.__cctvRebuildSurface=1;didRebuild=true;try{vv.pause();vv.play();}catch(err2){}}" +
+                // log每一个video的全部关键状态 → logcat一眼看出是没播放还是没渲染
+                "        var vr=vv.getBoundingClientRect();try{console.log('[CCTV6_VIDEO_' + vi + ']' + ' id='+(vv.id||'') + ' tag='+vv.tagName + ' rect{x='+vr.x+',y='+vr.y+',w='+vr.width+',h='+vr.height+'}' + ' cssW='+vv.style.width+' cssH='+vv.style.height + ' vW='+vv.videoWidth+' vH='+vv.videoHeight + ' readyS='+vv.readyState + ' netS='+vv.networkState + ' paused='+vv.paused + ' muted='+vv.muted + ' vol='+vv.volume + ' curSrc='+String(vv.src||vv.currentSrc||'').slice(0,80) + ' didRebuildPausePlay='+didRebuild);}catch(e){}" +
+                "      }catch(err){try{console.log('[CCTV6_STEP3_ERR_' + vi + '] '+err.name+': '+err.message);}catch(e){}}" +
                 "    }" +
+                "    try{console.log('[CCTV6_STEP4_END] _ysh_forceVisibleDetach done. body_children_count='+(document.body?document.body.children.length:0));}catch(e){}" +
                 "  }" +
                 "  function ForceFullscreen(){" +
                 // yangshipin 专属前置: 锁滚动 + 兜底点击 + 强制全屏容器(其他台因_ysh_is()return,立刻跳过)
@@ -1841,6 +1858,19 @@ public final class MainActivity extends Activity {
         public boolean onConsoleMessage(android.webkit.ConsoleMessage cm) {
             String msg = cm.message();
             int level = cm.messageLevel().ordinal();
+            // ========= CCTV-6 调试日志:强制升级到 INFO 级别+显示到右上角调试面板 =========
+            // 所有我们在 _ysh_forceVisibleDetach 里打的 [CCTV6_*] log,强制输出到 logcat + 面板
+            if (msg != null && msg.contains("[CCTV6_")) {
+                Log.i("CCTV-TV", msg);
+                if (activity != null) {
+                    String shortMsg = msg.length() > 260 ? msg.substring(0, 260) : msg;
+                    // 关键日志(命中容器/video状态)显示到面板,普通(STEP0/STEP4)仅logcat
+                    if (msg.contains("[CCTV6_STEP2_SEL]") || msg.contains("[CCTV6_VIDEO_") || msg.contains("[CCTV6_STEP2_NO_PARENT]") || msg.contains("[CCTV6_STEP2_RECT]")) {
+                        activity.updateDebugPanel("CCTV6_DEBUG", shortMsg);
+                    }
+                }
+                return true;
+            }
             // 浏览器自身的 document.write 跨站警告:不是致命 JS 异常,降为 INFO,别霸住面板
             // 典型内容:"A parser-blocking, cross site ... is invoked via document.write ... MAY be blocked"
             if (msg.contains("parser-blocking") && msg.contains("document.write")) {
